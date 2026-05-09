@@ -1,0 +1,411 @@
+/* ==========================================================================
+   DTUNNEL MOD PANEL - PREMIUM STYLESHEET
+   ========================================================================== */
+
+/* --- 1. Imports & Fonts --- */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+/* --- 2. Root Variables & Theme System --- */
+:root {
+    /* Light Theme (Sol) */
+    --background: hsl(220, 16%, 96%);
+    --foreground: hsl(222, 18%, 16%);
+    --card: hsl(220, 14%, 99%);
+    --card-foreground: hsl(222, 18%, 16%);
+    --popover: hsl(220, 14%, 99%);
+    --popover-foreground: hsl(222, 18%, 16%);
+    --primary: hsl(216, 12%, 42%);
+    --primary-foreground: hsl(210, 40%, 98%);
+    --secondary: hsl(220, 12%, 92%);
+    --secondary-foreground: hsl(222, 18%, 18%);
+    --muted: hsl(220, 12%, 92%);
+    --muted-foreground: hsl(220, 10%, 42%);
+    --accent: hsl(220, 11%, 90%);
+    --accent-foreground: hsl(222, 18%, 18%);
+    --destructive: hsl(0, 68%, 52%);
+    --destructive-foreground: #fff;
+    --border: hsl(220, 12%, 84%);
+    --input: hsl(220, 14%, 100%);
+    --ring: hsl(216, 12%, 42%);
+    
+    /* Sidebar Light */
+    --sidebar: hsl(220, 14%, 93%);
+    --sidebar-foreground: hsl(222, 18%, 16%);
+    --sidebar-border: hsl(220, 12%, 82%);
+    --sidebar-accent: hsl(220, 12%, 88%);
+    --sidebar-card-active: #ffffff;
+    
+    /* Estado Colors */
+    --success: hsl(142, 71%, 45%);
+    --warning: hsl(38, 92%, 50%);
+    --info: hsl(199, 89%, 48%);
+    
+    /* Layout */
+    --radius: 0.75rem;
+    --font-main: 'Manrope', sans-serif;
+    --font-mono: 'Space Grotesk', sans-serif;
+    --sidebar-width: 280px;
+    --header-height: 64px;
+    --transition-speed: 0.3s;
+}
+
+/* Dark Theme (Lua) */
+.dark {
+    --background: hsl(220, 12%, 10%);
+    --foreground: hsl(220, 14%, 92%);
+    --card: hsl(220, 12%, 13%);
+    --card-foreground: hsl(220, 14%, 94%);
+    --popover: hsl(220, 12%, 13%);
+    --popover-foreground: hsl(220, 14%, 94%);
+    --primary: hsl(214, 16%, 68%);
+    --primary-foreground: hsl(220, 18%, 10%);
+    --secondary: hsl(220, 10%, 18%);
+    --secondary-foreground: hsl(220, 14%, 92%);
+    --muted: hsl(220, 10%, 18%);
+    --muted-foreground: hsl(220, 8%, 68%);
+    --accent: hsl(220, 10%, 17%);
+    --accent-foreground: hsl(220, 14%, 94%);
+    --destructive: hsl(0, 70%, 58%);
+    --destructive-foreground: #fff;
+    --border: hsl(220, 10%, 24%);
+    --input: hsl(220, 10%, 16%);
+    --ring: hsl(214, 16%, 68%);
+    
+    /* Sidebar Dark */
+    --sidebar: hsl(220, 13%, 11%);
+    --sidebar-foreground: hsl(220, 14%, 92%);
+    --sidebar-border: hsl(220, 9%, 22%);
+    --sidebar-accent: hsl(220, 10%, 16%);
+    --sidebar-card-active: #1e2024;
+    
+    --surface-glow: hsl(220, 10%, 34%);
+}
+
+/* --- 3. Base Resets --- */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent; /* Remove o azul do clique no mobile */
+}
+
+body {
+    font-family: var(--font-main);
+    background-color: var(--background);
+    color: var(--foreground);
+    line-height: 1.6;
+    transition: background-color var(--transition-speed), color var(--transition-speed);
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* --- 4. Sidebar Estilo Premium Card --- */
+.sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: var(--sidebar-width);
+    height: 100vh;
+    background-color: var(--sidebar);
+    border-right: 1px solid var(--sidebar-border);
+    display: flex;
+    flex-direction: column;
+    z-index: 100;
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-header {
+    padding: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+    border-bottom: 1px solid var(--sidebar-border);
+}
+
+.sidebar-brand {
+    font-size: 1.1rem;
+    font-weight: 800;
+    color: var(--sidebar-foreground);
+    font-family: var(--font-mono);
+}
+
+.sidebar-brand span {
+    color: var(--primary);
+}
+
+.sidebar-nav {
+    flex: 1;
+    padding: 1rem 0.75rem;
+    overflow-y: auto;
+}
+
+/* Estilo do Botão como CARD */
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: 12px;
+    color: var(--sidebar-foreground);
+    font-size: 0.9rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+    cursor: pointer;
+}
+
+/* Hover e Efeito de Foco */
+.nav-item:hover {
+    background-color: var(--sidebar-accent);
+    transform: translateX(4px);
+}
+
+/* ESTADO ATIVO (O que fica marcado) */
+.nav-item.active {
+    background-color: var(--sidebar-card-active) !important;
+    color: var(--foreground);
+    font-weight: 700;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    border: 1px solid var(--sidebar-border);
+}
+
+.dark .nav-item.active {
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    background-color: var(--sidebar-card-active) !important;
+}
+
+/* Animação de Impulso (Click Animation) */
+.nav-item:active {
+    transform: scale(0.94) !important;
+    transition: transform 0.1s ease;
+}
+
+/* Ícones do Menu */
+.nav-icon {
+    width: 20px;
+    height: 20px;
+    opacity: 0.7;
+    transition: opacity 0.2s;
+}
+
+.nav-item.active .nav-icon {
+    opacity: 1;
+    color: var(--primary);
+}
+
+/* --- 5. Sanfona (Accordion) System --- */
+.nav-submenu {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    background-color: rgba(0, 0, 0, 0.03);
+    border-radius: 0 0 12px 12px;
+    margin-top: -0.5rem;
+    margin-bottom: 0.5rem;
+    margin-left: 0.75rem;
+    margin-right: 0.75rem;
+}
+
+.dark .nav-submenu {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+.nav-submenu.open {
+    max-height: 400px;
+    padding: 0.5rem 0;
+}
+
+.sub-item {
+    display: flex;
+    align-items: center;
+    padding: 0.65rem 1rem 0.65rem 2.5rem;
+    font-size: 0.85rem;
+    color: var(--muted-foreground);
+    text-decoration: none;
+    transition: all 0.2s;
+}
+
+.sub-item:hover {
+    color: var(--primary);
+    background-color: rgba(var(--primary), 0.1);
+}
+
+.nav-chevron {
+    margin-left: auto;
+    width: 16px;
+    height: 16px;
+    transition: transform 0.3s;
+}
+
+.nav-item.open .nav-chevron {
+    transform: rotate(180deg);
+}
+
+/* --- 6. Sidebar Footer & User Info --- */
+.sidebar-footer {
+    padding: 1.25rem;
+    border-top: 1px solid var(--sidebar-border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.user-info-card {
+    background-color: var(--sidebar-card-active);
+    padding: 0.85rem;
+    border-radius: 12px;
+    border: 1px solid var(--sidebar-border);
+}
+
+.session-label {
+    display: block;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--muted-foreground);
+    margin-bottom: 0.25rem;
+}
+
+.user-email {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--foreground);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* --- 7. Layout & Content Area --- */
+.main-content {
+    flex: 1;
+    margin-left: var(--sidebar-width);
+    transition: margin-left 0.3s ease;
+    min-height: 100vh;
+}
+
+.topbar {
+    height: var(--header-height);
+    background-color: var(--card);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 1.5rem;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+
+.page-content {
+    padding: 2rem;
+}
+
+/* --- 8. Stat Cards (Panel principal) --- */
+.grid {
+    display: grid;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.grid-4 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+
+.stat-card {
+    background-color: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+    border-color: var(--primary);
+}
+
+.stat-card-value {
+    font-size: 1.75rem;
+    font-weight: 800;
+    font-family: var(--font-mono);
+    color: var(--foreground);
+}
+
+/* --- 9. Buttons & UI Elements --- */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.75rem 1.25rem;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    gap: 0.5rem;
+    border: none;
+}
+
+.btn-primary { background: var(--primary); color: var(--primary-foreground); }
+.btn-primary:hover { opacity: 0.9; transform: scale(1.02); }
+.btn:active { transform: scale(0.96); }
+
+/* --- 10. Forms & Inputs --- */
+.form-control {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border-radius: 10px;
+    background: var(--input);
+    border: 1px solid var(--border);
+    color: var(--foreground);
+    transition: border-color 0.2s;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(var(--primary), 0.1);
+}
+
+/* --- 11. Mobile Responsiveness --- */
+@media (max-width: 992px) {
+    .sidebar {
+        transform: translateX(-100%);
+    }
+    
+    .sidebar.open {
+        transform: translateX(0);
+        box-shadow: 20px 0 50px rgba(0,0,0,0.2);
+    }
+    
+    .main-content {
+        margin-left: 0;
+    }
+    
+    .sidebar-toggle {
+        display: flex;
+    }
+}
+
+/* --- 12. Miscellaneous Helpers --- */
+.divider {
+    height: 1px;
+    background: var(--sidebar-border);
+    margin: 1.5rem 1rem;
+    opacity: 0.5;
+}
+
+.text-success { color: var(--success); }
+.text-danger { color: var(--destructive); }
+
+/* Scrollbar Customization */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+
+/* FIM DO ARQUIVO */

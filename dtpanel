@@ -1,0 +1,2065 @@
+#!/bin/bash
+# ================================================================
+#  panel - Gestión completa By Elnene Panel WEB2
+#  WA: 3455236886 | TG: @El_NeNe_Sando
+# ================================================================
+PANEL_VERSION="v1.0.54"
+PANEL_COMMIT="configs-rawarray-signing"
+PANEL_DATE="2026-05-10"
+
+PANEL_DIR="/var/www/html"
+BACKUP_DIR="/var/backups/dtpanel"
+DB_USERS="$PANEL_DIR/db/usuarios.json"
+DB_SQLITE="$PANEL_DIR/database/database.sqlite"
+ADMIN_EMAIL_FILE="$PANEL_DIR/db/.admin_email"
+EMAIL_CFG="$PANEL_DIR/db/.email_config.json"
+
+RED='\033[0;31m';    GREEN='\033[0;32m';  YELLOW='\033[1;33m'
+CYAN='\033[0;36m';  BOLD='\033[1m';     NC='\033[0m'
+BLUE='\033[0;34m';  PURPLE='\033[0;35m'; WHITE='\033[1;37m'
+BGREEN='\033[1;32m'; BRED='\033[1;31m'; BYELLOW='\033[1;33m'
+BCYAN='\033[1;36m';  BBLUE='\033[1;34m'; DIM='\033[2m'
+
+get_ipv4() {
+    IP=$(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null)
+    [ -z "$IP" ] && IP=$(curl -4 -s --max-time 5 icanhazip.com 2>/dev/null)
+    [ -z "$IP" ] && IP=$(ip -4 addr show scope global | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1)
+    [ -z "$IP" ] && IP=$(hostname -I | tr ' ' '\n' | grep -v ':' | head -1)
+    echo "$IP"
+}
+SERVER_IP=$(get_ipv4)
+
+pause() { echo ""; read -p "  Presioná ENTER para continuar..."; }
+
+htaccess_check() {
+    if [ ! -f "$PANEL_DIR/.htaccess" ]; then
+        cat > "$PANEL_DIR/.htaccess" << 'HTEOF'
+Options -Indexes
+RewriteEngine On
+RewriteBase /
+RewriteRule ^(pages|includes|database|api|db)/.*$ /404 [R=403,L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php [QSA,L]
+
+<IfModule mod_php.c>
+    php_value memory_limit 1024M
+    php_value max_execution_time 0
+    php_value max_input_time 600
+    php_value post_max_size 210M
+    php_value upload_max_filesize 200M
+</IfModule>
+<IfModule mod_php8.c>
+    php_value memory_limit 1024M
+    php_value max_execution_time 0
+    php_value max_input_time 600
+    php_value post_max_size 210M
+    php_value upload_max_filesize 200M
+</IfModule>
+<IfModule mod_php7.c>
+    php_value memory_limit 1024M
+    php_value max_execution_time 0
+    php_value max_input_time 600
+    php_value post_max_size 210M
+    php_value upload_max_filesize 200M
+</IfModule>
+HTEOF
+        chown www-data:www-data "$PANEL_DIR/.htaccess"
+        chmod 644 "$PANEL_DIR/.htaccess"
+        systemctl restart apache2 -q
+    fi
+}
+
+title() {
+    clear
+    htaccess_check
+
+    local DATE_NOW=$(date '+%d/%m/%Y %H:%M:%S')
+    local SO=$(lsb_release -ds 2>/dev/null | tr -d '"' || echo "Linux")
+    local ARCH=$(uname -m)
+    local CPU_CORES=$(nproc 2>/dev/null || echo 1)
+    local LOAD=$(uptime 2>/dev/null | awk -F'load average:' '{gsub(/^ /,"",$2); print $2}' || echo "—")
+    local APACHE_STATUS=$(systemctl is-active apache2 2>/dev/null)
+    local APACHE_TXT="ACTIVO"; local APACHE_COL=$BGREEN
+    [ "$APACHE_STATUS" != "active" ] && { APACHE_TXT="INACTIVO"; APACHE_COL=$BRED; }
+    local TOTAL_U=0
+    [ -f "$DB_USERS" ] && TOTAL_U=$(python3 -c "import json; d=json.load(open('$DB_USERS')); print(len(d))" 2>/dev/null || echo 0)
+    local DISK_USED=$(df -h / 2>/dev/null | awk 'NR==2{print $3}')
+    local DISK_TOTAL=$(df -h / 2>/dev/null | awk 'NR==2{print $2}')
+    local DISK_USE=$(df -h / 2>/dev/null | awk 'NR==2{print $5}')
+    local DISK_FREE=$(df -h / 2>/dev/null | awk 'NR==2{print $4}')
+    local RAM_USED=$(free -m 2>/dev/null | awk 'NR==2{print $3}')
+    local RAM_TOTAL=$(free -m 2>/dev/null | awk 'NR==2{print $2}')
+    local RAM_PCT=$(free -m 2>/dev/null | awk 'NR==2{printf "%.0f", $3/$2*100}')
+    local RAM_FREE=$(free -m 2>/dev/null | awk 'NR==2{print $4}')
+    # CPU uso instantáneo — método confiable en Ubuntu
+    local CPU_USE=$(top -bn2 -d0.2 2>/dev/null | grep -i '%cpu\|Cpu(s)' | tail -1 \
+        | awk '{for(i=1;i<=NF;i++){if($i~/^[0-9]+\.?[0-9]*$/ && $(i-1)~/us|ni|CPU/){printf "%d",$i;exit}}}' 2>/dev/null)
+    [ -z "$CPU_USE" ] && CPU_USE="0"
+    local LAST_BK=$(ls /var/backups/dtpanel/*.tar.gz 2>/dev/null | sort | tail -1 \
+        | xargs -I{} stat -c "%y" {} 2>/dev/null | cut -c1-10 || echo "NO")
+    [ -z "$LAST_BK" ] && LAST_BK="NO"
+    local NET_DEV=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'dev \K\S+' | head -1)
+    local NET_RX="0"; local NET_TX="0"
+    if [ -n "$NET_DEV" ] && [ -f "/sys/class/net/${NET_DEV}/statistics/rx_bytes" ]; then
+        local _rx=$(cat /sys/class/net/${NET_DEV}/statistics/rx_bytes 2>/dev/null || echo 0)
+        local _tx=$(cat /sys/class/net/${NET_DEV}/statistics/tx_bytes 2>/dev/null || echo 0)
+        NET_RX=$(awk "BEGIN{printf \"%.2f\", $_rx/1073741824}")
+        NET_TX=$(awk "BEGIN{printf \"%.2f\", $_tx/1073741824}")
+    fi
+    local PANEL_URL="http://${SERVER_IP}"
+    local SSL_TXT="${RED}NO${NC}"
+    if command -v certbot &>/dev/null; then
+        local SSL_DOM=$(certbot certificates 2>/dev/null | grep "Domains:" | head -1 | awk '{print $2}')
+        [ -n "$SSL_DOM" ] && { PANEL_URL="https://${SSL_DOM}"; SSL_TXT="${GREEN}${SSL_DOM}${NC}"; }
+    fi
+
+    # ╔══════════════════════════════════════════════════════════╗  (inner=58)
+    # Centrar version dinamicamente — sin emojis para alineacion perfecta
+    local VER="${PANEL_VERSION}  *  commit: ${PANEL_COMMIT}  *  ${PANEL_DATE}"
+    local VL=${#VER}
+    local LP=$(( (58 - VL) / 2 ))
+    local RP=$(( 58 - VL - LP ))
+
+    echo -e "${BCYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BCYAN}║${NC}  ${BBLUE}══════════════════════════════════════════════════════${NC}  ${BCYAN}║${NC}"
+    echo -e "${BCYAN}║${NC}               ${BGREEN}★${NC}  ${BRED}${BOLD}PANEL${NC} ${BYELLOW}${BOLD}WEB2${NC}  ${BCYAN}${BOLD}By El NeNe${NC}  ${BGREEN}★${NC}               ${BCYAN}║${NC}"
+    echo -e "${BCYAN}║${NC}  ${BBLUE}══════════════════════════════════════════════════════${NC}  ${BCYAN}║${NC}"
+    printf "${BCYAN}║${NC}${DIM}%${LP}s%s%${RP}s${NC}${BCYAN}║${NC}\n" "" "$VER" ""
+    echo -e "${BCYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+
+    # ── SISTEMA ────────────────────────────────────────────────────
+    echo -e "${BCYAN}──────────────────────────────────────────────────────────────${NC}"
+    printf "  ${DIM}S.O  :${NC} %-30s${DIM}IP    :${NC} %s\n"    "${SO:0:28}" "$SERVER_IP"
+    printf "  ${DIM}Arch :${NC} %-30s${DIM}Fecha :${NC} %s\n"    "$ARCH"        "$DATE_NOW"
+    # ── PANEL ──────────────────────────────────────────────────────
+    echo -e "${BCYAN}──────────────────────────────────────────────────────────────${NC}"
+    printf "  Apache : ${APACHE_COL}%-10s${NC}  Usuarios: ${WHITE}%s${NC}   Backup: %s\n" \
+        "$APACHE_TXT" "$TOTAL_U" "$LAST_BK"
+    printf "  URL    : ${YELLOW}%-38s${NC}  SSL: ${SSL_TXT}\n" "$PANEL_URL"
+    # ── RECURSOS ───────────────────────────────────────────────────
+    echo -e "${BCYAN}──────────────────────────────────────────────────────────────${NC}"
+    printf "  Disco  : ${BBLUE}%s / %s${NC} (%s)   libre: %s\n"           "$DISK_USED" "$DISK_TOTAL" "$DISK_USE" "$DISK_FREE"
+    printf "  RAM    : ${BBLUE}%s / %s MB${NC} (%s%%)  libre: %s MB\n"    "$RAM_USED"  "$RAM_TOTAL"  "$RAM_PCT"  "$RAM_FREE"
+    printf "  CPU    : ${BBLUE}%sc${NC}  uso: ${BBLUE}%s%%${NC}  load: %s\n" "$CPU_CORES" "$CPU_USE" "$LOAD"
+    printf "  Red    : RX ${BBLUE}%s GB${NC}  |  TX ${BBLUE}%s GB${NC}  (desde boot)\n" "$NET_RX" "$NET_TX"
+    echo -e "${BCYAN}──────────────────────────────────────────────────────────────${NC}"
+    echo ""
+}
+
+
+setup_apk_signing() {
+    SIGN_DIR="$PANEL_DIR/panel/sign"
+    KEY_ALIAS="dtunnelkey"
+    KEY_PASS="Dtunnel2024!!"
+    KEYSTORE="$SIGN_DIR/release.jks"
+    UBER_SIGNER="$SIGN_DIR/uber-apk-signer.jar"
+    UBER_URL="https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar"
+
+    mkdir -p "$SIGN_DIR" 2>/dev/null
+
+    while true; do
+        clear
+        title 2>/dev/null || true
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${BOLD}∘ Setup Firma APK Automática${NC}"
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+        # ── DIAGNÓSTICO ────────────────────────────────────────────
+        echo ""
+        echo -e "  ${BOLD}Estado actual:${NC}"
+
+        if command -v java &>/dev/null; then
+            JAVA_VER=$(java -version 2>&1 | head -1)
+            echo -e "    ${GREEN}✓${NC} Java instalado: ${DIM}${JAVA_VER}${NC}"
+            JAVA_OK=1
+        else
+            echo -e "    ${RED}✗${NC} Java JDK no instalado"
+            JAVA_OK=0
+        fi
+
+        if command -v keytool &>/dev/null; then
+            echo -e "    ${GREEN}✓${NC} keytool disponible"
+        else
+            echo -e "    ${RED}✗${NC} keytool no encontrado"
+        fi
+
+        if command -v jarsigner &>/dev/null; then
+            echo -e "    ${GREEN}✓${NC} jarsigner disponible"
+        else
+            echo -e "    ${RED}✗${NC} jarsigner no encontrado"
+        fi
+
+        if [ -f "$KEYSTORE" ]; then
+            KS_SZ=$(stat -c%s "$KEYSTORE" 2>/dev/null || echo 0)
+            echo -e "    ${GREEN}✓${NC} Keystore: ${DIM}${KEYSTORE} (${KS_SZ} bytes)${NC}"
+            KEYSTORE_OK=1
+        else
+            echo -e "    ${RED}✗${NC} Keystore no existe"
+            KEYSTORE_OK=0
+        fi
+
+        if [ -f "$UBER_SIGNER" ] && [ -s "$UBER_SIGNER" ]; then
+            US_SZ=$(stat -c%s "$UBER_SIGNER" 2>/dev/null || echo 0)
+            US_MB=$((US_SZ / 1024 / 1024))
+            echo -e "    ${GREEN}✓${NC} uber-apk-signer.jar (${US_MB} MB)"
+            SIGNER_OK=1
+        else
+            echo -e "    ${RED}✗${NC} uber-apk-signer.jar no descargado"
+            SIGNER_OK=0
+        fi
+
+        # Verificar permisos del directorio
+        if [ -w "$SIGN_DIR" ]; then
+            DIR_OWNER=$(stat -c "%U:%G" "$SIGN_DIR" 2>/dev/null || echo "?")
+            echo -e "    ${GREEN}✓${NC} Directorio sign: ${DIM}owner=${DIR_OWNER}${NC}"
+        else
+            echo -e "    ${RED}✗${NC} Sin permisos de escritura en ${SIGN_DIR}"
+        fi
+
+        # ── MENÚ ───────────────────────────────────────────────────
+        echo ""
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${WHITE}[1]${NC}  🚀  Hacer todo (recomendado)"
+        echo -e "  ${WHITE}[2]${NC}  ☕  Instalar Java JDK 21 (apt-get install)"
+        echo -e "  ${WHITE}[3]${NC}  🔑  Generar keystore release.jks"
+        echo -e "  ${WHITE}[4]${NC}  ⬇️  Descargar uber-apk-signer.jar"
+        echo -e "  ${WHITE}[5]${NC}  🔐  Probar firma con APK base"
+        echo -e "  ${WHITE}[6]${NC}  🛠️   Reset (borrar keystore y signer, empezar de cero)"
+        echo -e "  ${WHITE}[7]${NC}  📋  Ver logs de la última firma desde Apache"
+        echo -e "  ${WHITE}[0]${NC}  ⬅️   Volver al menú principal"
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        read -p "  Selección: " sub_opt
+
+        case "$sub_opt" in
+            1)
+                echo ""
+                echo -e "  ${BOLD}▶ Ejecutando setup completo...${NC}"
+                _sign_install_java
+                _sign_gen_keystore
+                _sign_download_signer
+                _sign_fix_perms
+                _sign_test_signing
+                echo ""
+                echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "  ${GREEN}  ✅ Setup completo. Probá generar un APK desde el panel.${NC}"
+                echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                pause
+                ;;
+            2)
+                echo ""
+                _sign_install_java
+                pause
+                ;;
+            3)
+                echo ""
+                _sign_gen_keystore
+                _sign_fix_perms
+                pause
+                ;;
+            4)
+                echo ""
+                _sign_download_signer
+                _sign_fix_perms
+                pause
+                ;;
+            5)
+                echo ""
+                _sign_test_signing
+                pause
+                ;;
+            6)
+                echo ""
+                echo -e "  ${YELLOW}▶ Borrando keystore y uber-apk-signer...${NC}"
+                rm -f "$KEYSTORE" "$UBER_SIGNER"
+                echo -e "  ${GREEN}✓ Reset completado. Volvé a la opción [1] para reinstalar.${NC}"
+                pause
+                ;;
+            7)
+                echo ""
+                echo -e "  ${BOLD}▶ Últimos logs de Apache (PHP errors relacionados con APK):${NC}"
+                LOG="/var/log/apache2/error.log"
+                [ ! -f "$LOG" ] && LOG="/var/log/apache2/error_log"
+                if [ -f "$LOG" ]; then
+                    tail -100 "$LOG" 2>/dev/null | grep -iE "apk|sign|java|jarsig|keystore|uber" | tail -30
+                    echo ""
+                    echo -e "  ${DIM}Si está vacío, no hay errores recientes (✓) — o el error_log está en otra ruta.${NC}"
+                else
+                    echo -e "  ${RED}No se encontró /var/log/apache2/error.log${NC}"
+                fi
+                pause
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo -e "  ${RED}Opción inválida${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+_sign_install_java() {
+    if command -v java &>/dev/null; then
+        echo -e "  ${GREEN}✓ Java ya está instalado${NC}"
+        return 0
+    fi
+    echo -e "  ${YELLOW}▶ Actualizando lista de paquetes...${NC}"
+    if ! apt-get update -qq 2>&1 | tail -3; then
+        echo -e "  ${RED}✗ apt-get update falló. Verificá conexión y repos.${NC}"
+        return 1
+    fi
+    echo -e "  ${YELLOW}▶ Instalando openjdk-21-jdk-headless (JDK liviano)...${NC}"
+    if apt-get install -y openjdk-21-jdk-headless 2>&1 | tail -10; then
+        if command -v java &>/dev/null; then
+            echo -e "  ${GREEN}✓ Java instalado: $(java -version 2>&1 | head -1)${NC}"
+            return 0
+        fi
+    fi
+    # Fallback: probar 17
+    echo -e "  ${YELLOW}▶ Probando openjdk-17-jdk-headless...${NC}"
+    apt-get install -y openjdk-17-jdk-headless 2>&1 | tail -5
+    # Fallback: default-jdk
+    if ! command -v java &>/dev/null; then
+        echo -e "  ${YELLOW}▶ Probando default-jdk...${NC}"
+        apt-get install -y default-jdk 2>&1 | tail -5
+    fi
+    if command -v java &>/dev/null; then
+        echo -e "  ${GREEN}✓ Java instalado: $(java -version 2>&1 | head -1)${NC}"
+    else
+        echo -e "  ${RED}✗ No se pudo instalar Java. Probá manualmente:${NC}"
+        echo -e "  ${DIM}    apt-get update && apt-get install -y openjdk-21-jdk-headless${NC}"
+        return 1
+    fi
+}
+
+_sign_gen_keystore() {
+    if [ -f "$KEYSTORE" ]; then
+        echo -e "  ${GREEN}✓ Keystore ya existe en ${KEYSTORE}${NC}"
+        return 0
+    fi
+    KEYTOOL=$(command -v keytool 2>/dev/null || find /usr/lib/jvm -name "keytool" 2>/dev/null | head -1)
+    if [ -z "$KEYTOOL" ]; then
+        echo -e "  ${RED}✗ keytool no disponible. Instalá Java primero (opción 2).${NC}"
+        return 1
+    fi
+    echo -e "  ${YELLOW}▶ Generando keystore con keytool...${NC}"
+    "$KEYTOOL" -genkey -v -noprompt \
+        -keystore "$KEYSTORE" -alias "$KEY_ALIAS" \
+        -keyalg RSA -keysize 2048 -validity 10000 \
+        -storepass "$KEY_PASS" -keypass "$KEY_PASS" \
+        -dname "CN=DTunnel,OU=DTunnel,O=DTunnel,L=BuenosAires,S=BA,C=AR" 2>&1 | tail -5
+    if [ -f "$KEYSTORE" ] && [ -s "$KEYSTORE" ]; then
+        echo -e "  ${GREEN}✓ Keystore generado: ${KEYSTORE}${NC}"
+    else
+        echo -e "  ${RED}✗ Falló la generación del keystore${NC}"
+        return 1
+    fi
+}
+
+_sign_download_signer() {
+    if [ -f "$UBER_SIGNER" ] && [ -s "$UBER_SIGNER" ]; then
+        echo -e "  ${GREEN}✓ uber-apk-signer.jar ya descargado${NC}"
+        return 0
+    fi
+    echo -e "  ${YELLOW}▶ Descargando uber-apk-signer.jar desde GitHub...${NC}"
+    rm -f "$UBER_SIGNER" 2>/dev/null
+    # Probar wget primero, luego curl
+    if command -v wget &>/dev/null; then
+        if wget --timeout=60 --tries=2 -O "$UBER_SIGNER" "$UBER_URL" 2>&1 | tail -5; then
+            :
+        fi
+    fi
+    if [ ! -s "$UBER_SIGNER" ] && command -v curl &>/dev/null; then
+        echo -e "  ${YELLOW}▶ Reintentando con curl...${NC}"
+        curl -L --max-time 60 -o "$UBER_SIGNER" "$UBER_URL" 2>&1 | tail -3
+    fi
+    if [ -f "$UBER_SIGNER" ] && [ -s "$UBER_SIGNER" ]; then
+        SZ=$(stat -c%s "$UBER_SIGNER" 2>/dev/null)
+        echo -e "  ${GREEN}✓ Descargado (${SZ} bytes)${NC}"
+    else
+        echo -e "  ${RED}✗ Falló la descarga${NC}"
+        echo -e "  ${DIM}URL: ${UBER_URL}${NC}"
+        rm -f "$UBER_SIGNER"
+        return 1
+    fi
+}
+
+_sign_fix_perms() {
+    chown -R www-data:www-data "$SIGN_DIR" 2>/dev/null || true
+    chmod 750 "$SIGN_DIR" 2>/dev/null || true
+    [ -f "$KEYSTORE" ] && chmod 640 "$KEYSTORE" 2>/dev/null
+    [ -f "$UBER_SIGNER" ] && chmod 644 "$UBER_SIGNER" 2>/dev/null
+}
+
+_sign_test_signing() {
+    echo -e "  ${BOLD}▶ Test de firma con APK base...${NC}"
+
+    if [ ! -f "$KEYSTORE" ]; then
+        echo -e "  ${RED}✗ Falta keystore (opción 3)${NC}"
+        return 1
+    fi
+    if ! command -v java &>/dev/null; then
+        echo -e "  ${RED}✗ Falta Java (opción 2)${NC}"
+        return 1
+    fi
+
+    # Buscar un APK base para probar
+    BASE_APKS_DIR="$PANEL_DIR/panel/uploads/apk_bases"
+    [ ! -d "$BASE_APKS_DIR" ] && BASE_APKS_DIR="$PANEL_DIR/uploads/apk_bases"
+    TEST_APK=$(find "$BASE_APKS_DIR" -name "*.apk" 2>/dev/null | head -1)
+    if [ -z "$TEST_APK" ]; then
+        echo -e "  ${YELLOW}⚠ No hay APKs base en $BASE_APKS_DIR para probar${NC}"
+        return 1
+    fi
+    echo -e "  ${DIM}Usando: $TEST_APK${NC}"
+
+    TMPDIR=$(mktemp -d)
+    cp "$TEST_APK" "$TMPDIR/test.apk"
+
+    if [ -f "$UBER_SIGNER" ]; then
+        echo -e "  ${YELLOW}▶ Firmando con uber-apk-signer (V1+V2+V3)...${NC}"
+        java -jar "$UBER_SIGNER" \
+            --apks "$TMPDIR/test.apk" \
+            --out "$TMPDIR" \
+            --ks "$KEYSTORE" \
+            --ksAlias "$KEY_ALIAS" \
+            --ksPass "$KEY_PASS" \
+            --ksKeyPass "$KEY_PASS" \
+            --allowResign --overwrite 2>&1 | tail -10
+        SIGNED=$(find "$TMPDIR" -name "*signed*.apk" 2>/dev/null | head -1)
+        [ -z "$SIGNED" ] && SIGNED="$TMPDIR/test.apk"
+        if [ -f "$SIGNED" ] && [ -s "$SIGNED" ]; then
+            SZ=$(stat -c%s "$SIGNED")
+            echo -e "  ${GREEN}✓ APK firmado correctamente: ${SZ} bytes${NC}"
+        else
+            echo -e "  ${RED}✗ uber-apk-signer falló${NC}"
+        fi
+    elif command -v jarsigner &>/dev/null; then
+        echo -e "  ${YELLOW}▶ Firmando con jarsigner V1 (fallback)...${NC}"
+        jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore "$KEYSTORE" \
+            -storepass "$KEY_PASS" -keypass "$KEY_PASS" \
+            "$TMPDIR/test.apk" "$KEY_ALIAS" 2>&1 | tail -5 \
+            && echo -e "  ${GREEN}✓ Firmado con jarsigner V1${NC}" \
+            || echo -e "  ${RED}✗ jarsigner falló${NC}"
+    fi
+
+    rm -rf "$TMPDIR"
+}
+
+show_menu() {
+    title
+    local TOTAL_U=0
+    [ -f "$DB_USERS" ] && TOTAL_U=$(python3 -c "import json; d=json.load(open('$DB_USERS')); print(len(d))" 2>/dev/null || echo 0)
+    # Columnas alineadas con printf:
+    #   col izq = pos 2, ancho visible 36 → col der arranca en pos 38
+    #   3 cols: col1 pos 2 (w=16), col2 pos 18 (w=20), col3 pos 38
+    local SEP="${BCYAN}──────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ${WHITE}${BOLD}MENU PRINCIPAL${NC}  —  elegí una opción y presioná Enter"
+    echo -e "$SEP"
+    # ── PANEL / USUARIOS ─────────────────────────────────────────
+    printf "  ${BGREEN}%-36s${NC}${BYELLOW}%s${NC}${DIM} (%s)${NC}\n"  "PANEL"  "USUARIOS"  "$TOTAL_U"
+    printf "  ${GREEN}[01]${NC} %-31s${YELLOW}[05]${NC} %s\n"  "Estado del panel"   "Listar clientes"
+    printf "  ${GREEN}[02]${NC} %-31s${YELLOW}[06]${NC} %s\n"  "Reiniciar Apache"   "Editar cliente"
+    printf "  ${GREEN}[03]${NC} %-31s${YELLOW}[07]${NC} %s\n"  "Ver logs de error"  "Buscar cliente"
+    printf "  ${GREEN}[04]${NC} %-31s${YELLOW}[08]${NC} %s\n"  "Actualizar GitHub"  "Ver bloqueados"
+    printf "  %-36s${YELLOW}[09]${NC} %s\n"                    ""                   "Cambiar admin pass"
+    echo -e "$SEP"
+    # ── PRECIOS / SISTEMA / BACKUP ───────────────────────────────
+    echo -e "  ${PURPLE}PRECIOS         ${BBLUE}SISTEMA             ${BCYAN}BACKUP${NC}"
+    echo -e "  ${PURPLE}[10]${NC} Precios    ${BLUE}[11]${NC} Puertos        ${CYAN}[14]${NC} Backup completo"
+    echo -e "                  ${BLUE}[12]${NC} Autoarranque   ${CYAN}[15]${NC} Restaurar"
+    echo -e "                  ${BLUE}[13]${NC} Info VPS       ${CYAN}[16]${NC} Exportar VPS"
+    echo -e "$SEP"
+    # ── APK & EXTRAS / SSL ───────────────────────────────────────
+    printf "  ${WHITE}%-36s${NC}${BGREEN}%s${NC}\n"                       "APK & EXTRAS"   "SSL / HTTPS"
+    printf "  ${WHITE}[18]${NC} %-31s${GREEN}[22]${NC} %s\n"              "Stats del mes"  "Instalar cert HTTPS"
+    printf "  ${WHITE}[19]${NC} %-17s${WHITE}[20]${NC} %-13s${WHITE}[21]${NC} %s\n"  "Email notif."  "APK base"  "Fix PHP limits"
+    printf "  ${WHITE}[23]${NC} %s\n"  "🔑 Setup Firma APK (auto-sign V1+V2+V3)"
+    echo -e "$SEP"
+    # ── FINAL ────────────────────────────────────────────────────
+    printf "  ${BRED}[17]${NC} %-31s${DIM}[00]${NC} %s\n"  "Desinstalar panel"  "Salir"
+    echo -e "$SEP"
+    echo ""
+    echo -ne "  ${BCYAN}►${NC} Opcion: "
+}
+
+# ── [1] Estado ────────────────────────────────────────────────
+do_status() {
+    title
+    echo -e "  ${BOLD}Estado del Panel${NC}\n"
+    echo -e "  Apache:     $(systemctl is-active apache2 2>/dev/null)"
+    echo -e "  PHP:        $(php -r 'echo PHP_VERSION;' 2>/dev/null)"
+    echo -e "  IP pública: ${GREEN}${SERVER_IP}${NC}"
+    echo -e "  Panel web:  ${GREEN}http://${SERVER_IP}${NC}"
+    echo -e "  .htaccess:  $([ -f $PANEL_DIR/.htaccess ] && echo "${GREEN}OK${NC}" || echo "${RED}FALTA${NC}")"
+    echo ""
+    if [ -f "$DB_USERS" ]; then
+        python3 -c "
+import json
+from datetime import datetime
+try:
+    users = json.load(open('$DB_USERS'))
+    now = datetime.now()
+    total = len(users)
+    admins = sum(1 for u in users if u.get('role')=='admin')
+    blocked = sum(1 for u in users if u.get('is_blocked', False))
+    vencidos = 0
+    for u in users:
+        exp = u.get('expires_at','')
+        if exp and '2099' not in exp:
+            try:
+                if datetime.strptime(exp[:19],'%Y-%m-%d %H:%M:%S') < now: vencidos+=1
+            except: pass
+    print(f'  Clientes registrados: {total}')
+    print(f'  Administradores:      {admins}')
+    print(f'  Activos:              {total-blocked-vencidos}')
+    print(f'  Por vencer (< 5d):    ', end='')
+    close=sum(1 for u in users if not u.get('is_blocked') and u.get('expires_at','') and '2099' not in u.get('expires_at','') and 0 <= (datetime.strptime(u['expires_at'][:19],'%Y-%m-%d %H:%M:%S')-now).days < 5 if u.get('expires_at'))
+    print(close)
+    print(f'  Vencidos:             {vencidos}')
+    print(f'  Bloqueados:           {blocked}')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null
+    else
+        echo -e "  ${YELLOW}Sin usuarios registrados aún${NC}"
+    fi
+    if [ -f "$DB_USERS" ]; then
+        local UJSON=$(python3 -c "import json; d=json.load(open('$DB_USERS')); print(len(d))" 2>/dev/null || echo 0)
+        echo -e "  ${BCYAN}Usuarios (JSON):${NC}   ${GREEN}${UJSON}${NC}"
+    fi
+    echo ""
+    pause
+}
+
+# ── [2] Reiniciar ─────────────────────────────────────────────
+do_restart() {
+    echo -e "\n${YELLOW}Reiniciando Apache...${NC}"
+    # Intentar restart normal
+    if systemctl restart apache2 2>/dev/null; then
+        echo -e "  ${GREEN}✓ Apache reiniciado correctamente${NC}"
+    else
+        echo -e "  ${YELLOW}Fallo en restart — verificando puerto 80...${NC}"
+        # Buscar PID del proceso que ocupa el puerto 80
+        local PID80=$(ss -tlnp 'sport = :80' 2>/dev/null \
+            | grep LISTEN | grep -oP 'pid=\K[0-9]+' | head -1)
+        if [ -n "$PID80" ]; then
+            local PROC80=$(ps -p "$PID80" -o comm= 2>/dev/null || echo "desconocido")
+            echo -e "  Puerto 80 ocupado por: ${RED}${PROC80}${NC} (PID: ${PID80})"
+            if [[ "$PROC80" != *apache* ]] && [[ "$PROC80" != *httpd* ]]; then
+                echo -e "  ${YELLOW}Liberando puerto 80...${NC}"
+                kill -9 "$PID80" 2>/dev/null
+                sleep 1
+            fi
+        fi
+        # Detener completamente y volver a iniciar
+        systemctl stop apache2 2>/dev/null
+        sleep 1
+        systemctl start apache2 2>/dev/null \
+            && echo -e "  ${GREEN}✓ Apache iniciado${NC}" \
+            || {
+                echo -e "  ${RED}✗ No se pudo iniciar Apache${NC}"
+                echo -e "  ${DIM}Ver detalles: journalctl -u apache2 -n 15 --no-pager${NC}"
+            }
+    fi
+    sleep 2
+}
+
+# ── [3] Logs ──────────────────────────────────────────────────
+do_logs() {
+    title
+    echo -e "  ${BOLD}Últimos 40 errores de Apache${NC}\n"
+    tail -40 /var/log/apache2/error.log 2>/dev/null || echo "No hay logs"
+    pause
+}
+
+# ── [4] Actualizar ────────────────────────────────────────────
+do_update() {
+    title
+    echo -e "  ${YELLOW}Actualizando desde GitHub...${NC}\n"
+    mkdir -p "$BACKUP_DIR"
+    BKNAME="$BACKUP_DIR/pre-update-$(date +%Y%m%d_%H%M%S).tar.gz"
+    tar -czf "$BKNAME" -C "$PANEL_DIR" . 2>/dev/null
+    echo -e "  ${GREEN}✓ Backup previo: $BKNAME${NC}"
+    rm -rf /tmp/dtpanel_update
+    echo -e "  ${DIM}Descargando repositorio...${NC}"
+    git clone "https://github.com/eze1087/PanelwebDtunel2" /tmp/dtpanel_update --quiet --depth 1
+    if [ -d "/tmp/dtpanel_update" ]; then
+        [ -f "$DB_USERS" ] && cp "$DB_USERS" /tmp/users_bk.json
+        [ -f "$DB_SQLITE" ] && cp "$DB_SQLITE" /tmp/db_bk.sqlite
+        cp -r /tmp/dtpanel_update/. "$PANEL_DIR/"
+        [ -f /tmp/users_bk.json ] && cp /tmp/users_bk.json "$DB_USERS"
+        [ -f /tmp/db_bk.sqlite ] && cp /tmp/db_bk.sqlite "$DB_SQLITE"
+        # .htaccess con limites PHP para APKs grandes
+        cat > "$PANEL_DIR/.htaccess" << 'HTEOF'
+Options -Indexes
+RewriteEngine On
+RewriteBase /
+RewriteRule ^(pages|includes|database|api|db)/.*$ /404 [R=403,L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php [QSA,L]
+
+<IfModule mod_php.c>
+    php_value memory_limit 1024M
+    php_value max_execution_time 0
+    php_value max_input_time 600
+    php_value post_max_size 210M
+    php_value upload_max_filesize 200M
+</IfModule>
+<IfModule mod_php8.c>
+    php_value memory_limit 1024M
+    php_value max_execution_time 0
+    php_value max_input_time 600
+    php_value post_max_size 210M
+    php_value upload_max_filesize 200M
+</IfModule>
+<IfModule mod_php7.c>
+    php_value memory_limit 1024M
+    php_value max_execution_time 0
+    php_value max_input_time 600
+    php_value post_max_size 210M
+    php_value upload_max_filesize 200M
+</IfModule>
+HTEOF
+        # .user.ini para PHP-FPM
+        cat > "$PANEL_DIR/.user.ini" << 'INIEOF'
+upload_max_filesize = 200M
+post_max_size = 210M
+max_execution_time = 0
+max_input_time = 600
+memory_limit = 1024M
+INIEOF
+        chown -R www-data:www-data "$PANEL_DIR"
+        chmod -R 755 "$PANEL_DIR"
+        chmod 644 "$PANEL_DIR/.htaccess" "$PANEL_DIR/.user.ini"
+        chmod -R 775 "$PANEL_DIR/database" "$PANEL_DIR/db" 2>/dev/null
+        # Eliminar ProxyTimeout si quedó de versiones anteriores
+        sed -i '/ProxyTimeout/d' /etc/apache2/sites-available/000-default.conf 2>/dev/null
+        # Actualizar el comando panel en /usr/local/bin
+        if [ -f "$PANEL_DIR/dtpanel" ]; then
+            cp "$PANEL_DIR/dtpanel" /usr/local/bin/panel
+            chmod +x /usr/local/bin/panel
+            echo -e "  ${GREEN}✓ Comando 'panel' actualizado${NC}"
+        fi
+        rm -rf /tmp/dtpanel_update /tmp/users_bk.json /tmp/db_bk.sqlite
+        systemctl restart php*-fpm 2>/dev/null
+        systemctl restart apache2
+        NEW_VER=$(grep 'PANEL_VERSION=' /usr/local/bin/panel 2>/dev/null | head -1 | cut -d'"' -f2)
+        echo -e "\n  ${GREEN}✓ Panel actualizado a ${BYELLOW}${NEW_VER}${NC}  — recargando menú...${NC}"
+        sleep 2
+        exec /usr/local/bin/panel
+    else
+        echo -e "\n  ${RED}✗ No se pudo descargar. Verificá conexión y que el repo sea público.${NC}"
+        sleep 3
+    fi
+}
+
+# ── [5] Listar clientes ───────────────────────────────────────
+do_list_users() {
+    title
+    echo -e "  ${BOLD}Lista de clientes${NC}\n"
+    [ ! -f "$DB_USERS" ] && echo -e "  ${RED}Sin usuarios registrados${NC}" && pause && return
+    python3 -c "
+import json
+from datetime import datetime
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m'
+users = json.load(open('$DB_USERS'))
+now = datetime.now()
+print(f'  {BOLD}%-4s %-18s %-28s %-12s %-10s %-8s{NC}' % ('N°','USUARIO','EMAIL','VENCE','ESTADO','TIEMPO'))
+print('  ' + '─'*85)
+for i,u in enumerate(users,1):
+    exp = u.get('expires_at','')
+    blocked = u.get('is_blocked', False)
+    role = u.get('role','user')
+    try:
+        if '2099' in exp:
+            tiempo='ILIMITADO'; color=GREEN; status='Admin'
+        elif exp:
+            dt = datetime.strptime(exp[:19],'%Y-%m-%d %H:%M:%S')
+            diff = (dt-now).days
+            if blocked: tiempo='BLOQUEADO'; color=RED; status='Bloqueado'
+            elif diff<0: tiempo=f'{abs(diff)}d venc.'; color=RED; status='Vencido'
+            elif diff<5: tiempo=f'{diff} días'; color=YELLOW; status='Por vencer'
+            else: tiempo=f'{diff} días'; color=GREEN; status='Activo'
+        else:
+            tiempo='Sin fecha'; color=NC; status='Sin fecha'
+    except:
+        tiempo='?'; color=NC; status='?'
+    vence = exp[:10] if exp else '---'
+    print(f'  {color}%-4s %-18s %-28s %-12s %-10s %-8s{NC}' % (
+        str(i), u.get('username','?')[:17], u.get('email','?')[:27], vence, status, tiempo))
+print(f'\n  Total: {len(users)} cliente(s)')
+" 2>/dev/null
+    echo ""
+    pause
+}
+
+# ── [6] Editar cliente ────────────────────────────────────────
+_edit_show_list() {
+    DTDB="$DB_USERS" python3 << 'PYLIST'
+import json,os
+from datetime import datetime
+R=chr(27)+'[0;31m';G=chr(27)+'[0;32m';Y=chr(27)+'[1;33m';N=chr(27)+'[0m';B=chr(27)+'[1m'
+try:
+    users=json.load(open(os.environ['DTDB']))
+    now=datetime.now()
+    print('  '+B+'%-4s %-18s %-28s %-12s %-12s'%('N°','USUARIO','EMAIL','VENCE','ESTADO')+N)
+    print('  '+'─'*76)
+    for i,u in enumerate(users,1):
+        e=str(u.get('expires_at',''))
+        bl=u.get('is_blocked',False)
+        if '2099' in e:
+            c2=G; s='Admin/Ilimitado'
+        elif bl:
+            c2=R; s='Bloqueado'
+        elif e:
+            try:
+                d=(datetime.strptime(e[:19],'%Y-%m-%d %H:%M:%S')-now).days
+                if d<0:    c2=R; s='Vencido'
+                elif d<5:  c2=Y; s=str(d)+'d por vencer'
+                else:      c2=G; s=str(d)+'d restantes'
+            except:
+                c2=N; s='?'
+        else:
+            c2=N; s='Sin fecha'
+        vence=e[:10] if e else '---'
+        print('  '+c2+'%-4s %-18s %-28s %-12s %-12s'%(str(i),u.get('username','?')[:17],u.get('email','?')[:27],vence,s)+N)
+    print('  '+'─'*76)
+    print(f'  Total: {len(users)} cliente(s)')
+except Exception as ex:
+    print('  Error al leer base: '+str(ex))
+PYLIST
+}
+
+_edit_load_user() {
+    DTDB="$DB_USERS" DTNSEL="$1" python3 << 'PYSEL'
+import json,os,sys
+try:
+    db=os.environ['DTDB']
+    idx=int(os.environ['DTNSEL'])-1
+    users=json.load(open(db))
+    if idx<0 or idx>=len(users):
+        open('/tmp/dtpanel_sel','w').write('NOT_FOUND')
+        sys.exit()
+    u=users[idx]
+    exp=str(u.get('expires_at',''))
+    status='BLOQUEADO' if u.get('is_blocked',False) else 'Activo'
+    lines=[str(idx),
+           str(u.get('username','?')),
+           str(u.get('email','?')),
+           exp,
+           status,
+           str(u.get('role','user'))]
+    open('/tmp/dtpanel_sel','w').write('\n'.join(lines))
+except Exception as ex:
+    open('/tmp/dtpanel_sel','w').write('NOT_FOUND')
+PYSEL
+}
+
+do_edit_user() {
+    while true; do
+        title
+        echo -e "  ${BOLD}[6] Editar cliente${NC}\n"
+        [ ! -f "$DB_USERS" ] && echo -e "  ${RED}Sin usuarios registrados${NC}" && sleep 2 && return
+
+        # Mostrar lista completa con colores
+        _edit_show_list
+        echo ""
+        echo -ne "  Elegí el N° del cliente (0=volver): "
+        read NSEL
+        [ "$NSEL" = "0" ] || [ -z "$NSEL" ] && return
+
+        # Validar que sea número
+        [[ ! "$NSEL" =~ ^[0-9]+$ ]] && echo -e "\n  ${RED}Ingresá solo un número${NC}" && sleep 2 && continue
+
+        # Cargar datos del usuario seleccionado
+        _edit_load_user "$NSEL"
+        [ ! -f /tmp/dtpanel_sel ] && echo -e "\n  ${RED}Error al leer usuario${NC}" && sleep 2 && continue
+        FCONTENT=$(cat /tmp/dtpanel_sel)
+        if [ "$FCONTENT" = "NOT_FOUND" ]; then
+            echo -e "\n  ${RED}Número inválido, intentá de nuevo${NC}"
+            sleep 2; rm -f /tmp/dtpanel_sel; continue
+        fi
+
+        UIDX=$(sed -n '1p' /tmp/dtpanel_sel)
+        UNAME=$(sed -n '2p' /tmp/dtpanel_sel)
+        UEMAIL=$(sed -n '3p' /tmp/dtpanel_sel)
+        UEXP=$(sed -n '4p' /tmp/dtpanel_sel)
+        USTATUS=$(sed -n '5p' /tmp/dtpanel_sel)
+        UROLE=$(sed -n '6p' /tmp/dtpanel_sel)
+        rm -f /tmp/dtpanel_sel
+
+        # Sub-menú de edición para este cliente (con loop)
+        while true; do
+            title
+            echo -e "  ${BOLD}Editando cliente${NC}"
+            echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "  Usuario:     ${GREEN}${BOLD}$UNAME${NC}"
+            echo -e "  Email:       $UEMAIL"
+            echo -e "  Vencimiento: ${YELLOW}${UEXP:-Sin fecha}${NC}"
+            echo -e "  Estado:      $USTATUS  |  Rol: $UROLE"
+            echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            echo -e "  ${GREEN}[1]${NC} Cambiar fecha de vencimiento"
+            echo -e "  ${GREEN}[2]${NC} Agregar días"
+            echo -e "  ${GREEN}[3]${NC} Bloquear cuenta"
+            echo -e "  ${GREEN}[4]${NC} Desbloquear cuenta"
+            echo -e "  ${GREEN}[5]${NC} Acceso ilimitado (admin)"
+            echo -e "  ${GREEN}[6]${NC} Cambiar contraseña"
+            echo -e "  ${RED}[7]${NC} Eliminar cliente"
+            echo -e "  ${NC}[0]${NC} Volver a la lista"
+            echo ""
+            echo -ne "  Opción: "
+            read OPT
+
+            case $OPT in
+                1)
+                    echo -ne "\n  Nueva fecha (YYYY-MM-DD): "
+                    read NEWDATE
+                    [ -z "$NEWDATE" ] && continue
+                    [[ "$NEWDATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && NEWDATE="$NEWDATE 23:59:59"
+                    DTDB="$DB_USERS" DTIDX="$UIDX" DTVAL="$NEWDATE" python3 -c "
+import json,os
+u=json.load(open(os.environ['DTDB']))
+u[int(os.environ['DTIDX'])]['expires_at']=os.environ['DTVAL']
+open(os.environ['DTDB'],'w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+                    UEXP="$NEWDATE"
+                    echo -e "  ${GREEN}✓ Fecha actualizada: $NEWDATE${NC}"
+                    sleep 2;;
+                2)
+                    echo -ne "\n  ¿Cuántos días agregar?: "
+                    read DAYS
+                    [ -z "$DAYS" ] && continue
+                    [[ ! "$DAYS" =~ ^[0-9]+$ ]] && echo -e "  ${RED}Solo números${NC}" && sleep 2 && continue
+                    NUEVAFECHA=$(DTDB="$DB_USERS" DTIDX="$UIDX" DTDAYS="$DAYS" python3 << 'PYADD'
+import json,os
+from datetime import datetime,timedelta
+u=json.load(open(os.environ['DTDB']))
+idx=int(os.environ['DTIDX'])
+exp=u[idx].get('expires_at','')
+try:
+    base=datetime.strptime(str(exp)[:19],'%Y-%m-%d %H:%M:%S') if exp and '2099' not in str(exp) else datetime.now()
+    if base<datetime.now(): base=datetime.now()
+except:
+    base=datetime.now()
+new=(base+timedelta(days=int(os.environ['DTDAYS']))).strftime('%Y-%m-%d %H:%M:%S')
+u[idx]['expires_at']=new
+open(os.environ['DTDB'],'w').write(json.dumps(u,indent=4,ensure_ascii=False))
+print(new)
+PYADD
+)
+                    UEXP="$NUEVAFECHA"
+                    echo -e "  ${GREEN}✓ $DAYS días agregados — nuevo vencimiento: $NUEVAFECHA${NC}"
+                    sleep 2;;
+                3)
+                    DTDB="$DB_USERS" DTIDX="$UIDX" python3 -c "
+import json,os
+u=json.load(open(os.environ['DTDB']))
+u[int(os.environ['DTIDX'])]['is_blocked']=True
+open(os.environ['DTDB'],'w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+                    USTATUS="BLOQUEADO"
+                    echo -e "  ${RED}✓ $UNAME bloqueado${NC}"
+                    sleep 2;;
+                4)
+                    DTDB="$DB_USERS" DTIDX="$UIDX" python3 -c "
+import json,os
+u=json.load(open(os.environ['DTDB']))
+u[int(os.environ['DTIDX'])]['is_blocked']=False
+open(os.environ['DTDB'],'w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+                    USTATUS="Activo"
+                    echo -e "  ${GREEN}✓ $UNAME desbloqueado${NC}"
+                    sleep 2;;
+                5)
+                    DTDB="$DB_USERS" DTIDX="$UIDX" python3 -c "
+import json,os
+u=json.load(open(os.environ['DTDB']))
+idx=int(os.environ['DTIDX'])
+u[idx]['expires_at']='2099-12-31 23:59:59'
+u[idx]['role']='admin'
+u[idx]['is_blocked']=False
+open(os.environ['DTDB'],'w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+                    UEXP="2099-12-31 23:59:59"; UROLE="admin"; USTATUS="Activo"
+                    echo -e "  ${GREEN}✓ $UNAME — acceso ilimitado activado${NC}"
+                    sleep 2;;
+                6)
+                    echo -ne "\n  Nueva contraseña: "
+                    read -s NEWPASS; echo
+                    [ -z "$NEWPASS" ] && continue
+                    HASH=$(php -r "echo password_hash('$NEWPASS', PASSWORD_DEFAULT);" 2>/dev/null)
+                    [ -z "$HASH" ] && echo -e "  ${RED}Error generando hash (PHP requerido)${NC}" && sleep 2 && continue
+                    DTDB="$DB_USERS" DTIDX="$UIDX" DTHASH="$HASH" python3 -c "
+import json,os
+u=json.load(open(os.environ['DTDB']))
+u[int(os.environ['DTIDX'])]['password']=os.environ['DTHASH']
+open(os.environ['DTDB'],'w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+                    echo -e "  ${GREEN}✓ Contraseña de $UNAME cambiada${NC}"
+                    sleep 2;;
+                7)
+                    echo -ne "\n  ${RED}¿Confirmar eliminación de '$UNAME'? (s/N): ${NC}"
+                    read CONF
+                    if [[ "$CONF" =~ ^[sS]$ ]]; then
+                        DTDB="$DB_USERS" DTIDX="$UIDX" python3 -c "
+import json,os
+u=json.load(open(os.environ['DTDB']))
+u.pop(int(os.environ['DTIDX']))
+open(os.environ['DTDB'],'w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+                        echo -e "  ${GREEN}✓ $UNAME eliminado correctamente${NC}"
+                        sleep 2
+                        break  # Volver a la lista tras eliminar
+                    fi;;
+                0) break;;
+                *) echo -e "  ${RED}Opción inválida${NC}"; sleep 1;;
+            esac
+        done
+    done
+}
+
+# ── [7] Buscar ────────────────────────────────────────────────
+do_search_user() {
+    title
+    echo -e "  ${BOLD}Buscar cliente${NC}\n"
+    echo -ne "  Nombre o email: "
+    read TERM
+    [ -z "$TERM" ] && return
+    [ ! -f "$DB_USERS" ] && echo -e "  ${RED}Sin usuarios${NC}" && pause && return
+    echo ""
+    python3 -c "
+import json
+from datetime import datetime
+term='$(echo $TERM | tr '[:upper:]' '[:lower:]')'
+users=json.load(open('$DB_USERS'))
+found=[u for u in users if term in u.get('email','').lower() or term in u.get('username','').lower()]
+if not found: print('  Sin resultados')
+else:
+    now=datetime.now()
+    for u in found:
+        exp=u.get('expires_at','---')
+        bl=u.get('is_blocked',False)
+        role=u.get('role','user')
+        if '2099' in exp: status='Admin/Ilimitado'
+        elif bl: status='BLOQUEADO'
+        else:
+            try:
+                diff=(datetime.strptime(exp[:19],'%Y-%m-%d %H:%M:%S')-now).days
+                status='Vencido' if diff<0 else f'{diff} días restantes'
+            except: status='?'
+        print(f\"  Usuario: {u.get('username','?')}\")
+        print(f\"  Email:   {u.get('email','?')}\")
+        print(f\"  Vence:   {exp[:10] if exp else '---'} | Estado: {status} | Rol: {role}\")
+        print('  ' + '-'*55)
+" 2>/dev/null
+    pause
+}
+
+# ── [8] Bloqueados ────────────────────────────────────────────
+do_blocked_users() {
+    title
+    echo -e "  ${BOLD}Usuarios bloqueados${NC}\n"
+    [ ! -f "$DB_USERS" ] && echo -e "  ${RED}Sin usuarios${NC}" && pause && return
+    python3 -c "
+import json
+users=json.load(open('$DB_USERS'))
+blocked=[u for u in users if u.get('is_blocked',False)]
+print(f'  Total bloqueados: {len(blocked)}\n')
+if not blocked: print('  Ninguno bloqueado.')
+for u in blocked:
+    print(f\"  {u.get('username','?')} | {u.get('email','?')} | Venció: {u.get('expires_at','?')[:10]}\")
+" 2>/dev/null
+    pause
+}
+
+# ── [9] Cambiar credenciales admin ────────────────────────────
+do_change_admin() {
+    title
+    echo -e "  ${BOLD}Cambiar credenciales del administrador${NC}\n"
+    [ ! -f "$DB_USERS" ] && echo -e "  ${RED}Sin usuarios${NC}" && sleep 2 && return
+
+    # Buscar admin actual
+    ADMIN_DATA=$(python3 -c "
+import json, sys
+users=json.load(open('$DB_USERS'))
+for i,u in enumerate(users):
+    if u.get('role')=='admin':
+        print(f\"{i}@@{u.get('username','')}@@{u.get('email','')}\")
+        sys.exit()
+print('NOT_FOUND')
+" 2>/dev/null)
+
+    [ "$ADMIN_DATA" = "NOT_FOUND" ] && echo -e "  ${RED}No se encontró admin${NC}" && sleep 2 && return
+    AIDX=$(echo "$ADMIN_DATA" | awk -F'@@' '{print $1}')
+    ANAME=$(echo "$ADMIN_DATA" | awk -F'@@' '{print $2}')
+    AEMAIL=$(echo "$ADMIN_DATA" | awk -F'@@' '{print $3}')
+    echo -e "  Admin actual: ${GREEN}$ANAME${NC} | $AEMAIL\n"
+    echo -e "  ${GREEN}[1]${NC} Cambiar nombre de usuario"
+    echo -e "  ${GREEN}[2]${NC} Cambiar email de acceso"
+    echo -e "  ${GREEN}[3]${NC} Cambiar contraseña"
+    echo -e "  ${GREEN}[4]${NC} Cambiar todo"
+    echo -e "  ${GREEN}[0]${NC} Cancelar"
+    echo -ne "\n  Opción: "
+    read OPT
+
+    case $OPT in
+        1)
+            echo -ne "  Nuevo nombre de usuario: "
+            read NEWNAME; [ -z "$NEWNAME" ] && return
+            python3 -c "
+import json
+u=json.load(open('$DB_USERS'))
+u[$AIDX]['username']='$NEWNAME'
+open('$DB_USERS','w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+            # También actualizar en login.php si está hardcodeado
+            sed -i "s|'username' => 'ElNeNe'|'username' => '$NEWNAME'|g" "$PANEL_DIR/pages/login.php" 2>/dev/null
+            echo -e "  ${GREEN}✓ Nombre cambiado a: $NEWNAME${NC}";;
+        2)
+            echo -ne "  Nuevo email de acceso: "
+            read NEWEMAIL; [ -z "$NEWEMAIL" ] && return
+            python3 -c "
+import json
+u=json.load(open('$DB_USERS'))
+u[$AIDX]['email']='$NEWEMAIL'
+open('$DB_USERS','w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+            # Actualizar email hardcodeado en login.php
+            sed -i "s|elnene.admin@gmail.com|$NEWEMAIL|g" "$PANEL_DIR/pages/login.php" "$PANEL_DIR/pages/home.php" "$PANEL_DIR/pages/usuarios.php" "$PANEL_DIR/pages/dispositivos.php" "$PANEL_DIR/pages/404.php" "$PANEL_DIR/pages/renovar.php" 2>/dev/null
+            echo -e "  ${GREEN}✓ Email cambiado a: $NEWEMAIL${NC}"
+            echo -e "  ${YELLOW}⚠ Reiniciá Apache para aplicar${NC}";;
+        3)
+            echo -ne "  Nueva contraseña: "
+            read NEWPASS; [ -z "$NEWPASS" ] && return
+            HASH=$(php -r "echo password_hash('$NEWPASS', PASSWORD_DEFAULT);")
+            python3 -c "
+import json
+u=json.load(open('$DB_USERS'))
+u[$AIDX]['password']='$HASH'
+open('$DB_USERS','w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+            # Actualizar contraseña hardcodeada en login.php
+            sed -i "s|&& \\\$password === 'admin2004'||g" "$PANEL_DIR/pages/login.php" 2>/dev/null
+            echo -e "  ${GREEN}✓ Contraseña cambiada${NC}";;
+        4)
+            echo -ne "  Nuevo nombre: "; read NEWNAME; [ -z "$NEWNAME" ] && return
+            echo -ne "  Nuevo email:  "; read NEWEMAIL; [ -z "$NEWEMAIL" ] && return
+            echo -ne "  Nueva pass:   "; read NEWPASS; [ -z "$NEWPASS" ] && return
+            HASH=$(php -r "echo password_hash('$NEWPASS', PASSWORD_DEFAULT);")
+            python3 -c "
+import json
+u=json.load(open('$DB_USERS'))
+u[$AIDX]['username']='$NEWNAME'
+u[$AIDX]['email']='$NEWEMAIL'
+u[$AIDX]['password']='$HASH'
+open('$DB_USERS','w').write(json.dumps(u,indent=4,ensure_ascii=False))"
+            for f in pages/login.php pages/home.php pages/usuarios.php pages/dispositivos.php pages/404.php pages/renovar.php; do
+                sed -i "s|elnene.admin@gmail.com|$NEWEMAIL|g" "$PANEL_DIR/$f" 2>/dev/null
+            done
+            sed -i "s|'username' => 'ElNeNe'|'username' => '$NEWNAME'|g" "$PANEL_DIR/pages/login.php" 2>/dev/null
+            systemctl restart apache2 -q
+            echo -e "  ${GREEN}✓ Credenciales actualizadas: $NEWNAME / $NEWEMAIL${NC}";;
+    esac
+    sleep 2
+}
+
+# ── [10] Precios ──────────────────────────────────────────────
+do_prices() {
+    title
+    echo -e "  ${BOLD}Editar precios de planes${NC}\n"
+    RENOVAR="$PANEL_DIR/pages/renovar.php"
+    [ ! -f "$RENOVAR" ] && echo -e "  ${RED}No encontrado renovar.php${NC}" && pause && return
+    echo -e "  ${CYAN}Precios actuales:${NC}"
+    grep -E "'mensal'|'trimestral'|'anual'|'vitalicio'" "$RENOVAR" | grep "preco" | \
+      sed "s/.*'\(.*\)' =>.*'preco' => \([0-9.]*\).*/  \1: \$\2/" | head -4
+    echo ""
+    echo -e "  ${GREEN}[1]${NC} Mensual    ${GREEN}[2]${NC} Trimestral"
+    echo -e "  ${GREEN}[3]${NC} Anual      ${GREEN}[4]${NC} Vitalicio"
+    echo -e "  ${GREEN}[0]${NC} Volver"
+    echo -ne "\n  Opción: "
+    read POPT
+    [ "$POPT" = "0" ] && return
+    PLAN_MAP=([1]="mensal" [2]="trimestral" [3]="anual" [4]="vitalicio")
+    PLAN="${PLAN_MAP[$POPT]}"
+    [ -z "$PLAN" ] && return
+    echo -ne "  Nuevo precio para $PLAN (ej: 9.99): "
+    read NEWPRICE
+    [ -z "$NEWPRICE" ] && return
+    python3 -c "
+import re
+with open('$RENOVAR','r',encoding='utf-8',errors='replace') as f: c=f.read()
+p=r\"('$PLAN'.*?'preco'\s*=>\s*)\d+\.?\d*\"
+new=re.sub(p, lambda m: m.group(1)+'$NEWPRICE', c, flags=re.DOTALL)
+open('$RENOVAR','w',encoding='utf-8').write(new)
+print('OK')" && echo -e "  ${GREEN}✓ Precio de $PLAN actualizado a \$$NEWPRICE${NC}" || echo -e "  ${RED}✗ Error${NC}"
+    sleep 2
+}
+
+# ── [11] Puertos ──────────────────────────────────────────────
+do_ports() {
+    title
+    echo -e "  ${BOLD}Puertos activos${NC}\n"
+    echo -e "  ${CYAN}TCP en escucha:${NC}"
+    # Parsear ss: extraer dirección y solo el nombre del proceso (sin pid/fd)
+    ss -tlnp 2>/dev/null | awk '
+        /LISTEN/ {
+            addr = $4
+            proc = ""
+            # Extraer primer nombre entre comillas del campo users:(("nombre",...))
+            if (match($0, /users:\(\("([^"]+)"/, a)) {
+                proc = a[1]
+            } else if ($6 ~ /users:/) {
+                n = split($6, p, "\"")
+                if (n >= 2) proc = p[2]
+            }
+            printf "  %-28s %s\n", addr, proc
+        }
+    ' | sort -t: -k2 -n | head -20
+    echo ""
+    # Contar puertos únicos (no procesos)
+    HTTP_CNT=$(ss -tlnp 2>/dev/null | awk '/LISTEN/ && /:80($| )/' | wc -l)
+    HTTPS_CNT=$(ss -tlnp 2>/dev/null | awk '/LISTEN/ && /:443($| )/' | wc -l)
+    SSH_CNT=$(ss -tlnp 2>/dev/null | awk '/LISTEN/ && /:22($| )/' | wc -l)
+    CONN_CNT=$(ss -t state established 2>/dev/null | tail -n +2 | wc -l)
+    echo -e "  HTTP  (80):   ${HTTP_CNT} proceso(s)"
+    echo -e "  HTTPS (443):  ${HTTPS_CNT} proceso(s)"
+    echo -e "  SSH   (22):   ${SSH_CNT} proceso(s)"
+    echo -e "  Conexiones activas: ${CONN_CNT}"
+    pause
+}
+
+# ── [12] Autostart ────────────────────────────────────────────
+do_autostart() {
+    title
+    echo -e "  ${BOLD}Inicio automático post-reinicio${NC}\n"
+    echo -e "  Apache: $(systemctl is-enabled apache2 2>/dev/null)\n"
+    echo -e "  ${GREEN}[1]${NC} Habilitar  ${GREEN}[2]${NC} Deshabilitar  ${GREEN}[0]${NC} Volver"
+    echo -ne "\n  Opción: "
+    read AOPT
+    case $AOPT in
+        1) systemctl enable apache2 -q && echo -e "  ${GREEN}✓ Habilitado${NC}";;
+        2) systemctl disable apache2 -q && echo -e "  ${YELLOW}Deshabilitado${NC}";;
+    esac
+    sleep 2
+}
+
+# ── [13] Info servidor ────────────────────────────────────────
+do_server_info() {
+    title
+    echo -e "  ${BOLD}Información del servidor${NC}\n"
+    echo -e "  IP pública:  ${GREEN}${SERVER_IP}${NC}"
+    echo -e "  URL panel:   ${GREEN}http://${SERVER_IP}${NC}"
+    echo -e "  Hostname:    $(hostname)"
+    echo -e "  OS:          $(lsb_release -ds 2>/dev/null)"
+    echo -e "  Uptime:      $(uptime -p 2>/dev/null)"
+    echo -e "  Kernel:      $(uname -r)"
+    echo ""
+    echo -e "  CPU uso:  $(top -bn1 | grep 'Cpu(s)' | awk '{print $2}')%"
+    echo -e "  RAM:      $(free -h | grep Mem | awk '{print $3"/"$2}')"
+    echo -e "  Disco:    $(df -h / | tail -1 | awk '{print $3"/"$2" ("$5" usado)"}')"
+    echo ""
+    echo -e "  ${BOLD}PHP upload limit actual:${NC}  $(php -r 'echo ini_get("upload_max_filesize");' 2>/dev/null)"
+    echo -e "  ${BOLD}PHP post_max_size actual:${NC} $(php -r 'echo ini_get("post_max_size");' 2>/dev/null)"
+    echo ""
+    echo -e "  ${BOLD}Links de acceso:${NC}"
+    echo -e "  ${GREEN}➜ http://${SERVER_IP}/login${NC}"
+    echo -e "  ${GREEN}➜ http://${SERVER_IP}/register${NC}"
+    echo ""
+    echo -e "  ${BOLD}Soporte:${NC}"
+    echo -e "  WhatsApp: ${CYAN}3455236886${NC}"
+    echo -e "  Telegram: ${CYAN}@El_NeNe_Sando${NC}"
+    pause
+}
+
+# ── Corregir límites PHP y sincronización ─────────────────────
+do_fix_php_limits() {
+    title
+    echo -e "  ${BOLD}Corregir límites PHP + Sincronización de app${NC}\n"
+    echo -e "  Upload actual: ${YELLOW}$(php -r 'echo ini_get("upload_max_filesize");' 2>/dev/null)${NC}\n"
+    echo -e "  ${YELLOW}[1/3] Aplicando límites en PHP-FPM y php.ini...${NC}"
+
+    CHANGED=0
+    for PHP_INI in /etc/php/*/fpm/php.ini /etc/php/*/apache2/php.ini /etc/php/*/cli/php.ini; do
+        if [ -f "$PHP_INI" ]; then
+            sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 200M/' "$PHP_INI"
+            sed -i 's/^post_max_size = .*/post_max_size = 210M/' "$PHP_INI"
+            sed -i 's/^memory_limit = .*/memory_limit = 512M/' "$PHP_INI"
+            sed -i 's/^max_execution_time = .*/max_execution_time = 300/' "$PHP_INI"
+            echo -e "  ${GREEN}✓ $PHP_INI${NC}"; CHANGED=1
+        fi
+    done
+    for POOL in /etc/php/*/fpm/pool.d/www.conf; do
+        if [ -f "$POOL" ]; then
+            grep -q "php_admin_value\[upload_max_filesize\]" "$POOL" \
+                && sed -i 's/php_admin_value\[upload_max_filesize\].*/php_admin_value[upload_max_filesize] = 200M/' "$POOL" \
+                || echo "php_admin_value[upload_max_filesize] = 200M" >> "$POOL"
+            grep -q "php_admin_value\[post_max_size\]" "$POOL" \
+                && sed -i 's/php_admin_value\[post_max_size\].*/php_admin_value[post_max_size] = 210M/' "$POOL" \
+                || echo "php_admin_value[post_max_size] = 210M" >> "$POOL"
+            grep -q "php_admin_value\[memory_limit\]" "$POOL" \
+                && sed -i 's/php_admin_value\[memory_limit\].*/php_admin_value[memory_limit] = 512M/' "$POOL" \
+                || echo "php_admin_value[memory_limit] = 512M" >> "$POOL"
+            echo -e "  ${GREEN}✓ Pool FPM: $POOL${NC}"; CHANGED=1
+        fi
+    done
+    cat > "$PANEL_DIR/.user.ini" << 'PHPINI'
+upload_max_filesize = 200M
+post_max_size = 210M
+max_execution_time = 300
+max_input_time = 300
+memory_limit = 512M
+PHPINI
+    chmod 644 "$PANEL_DIR/.user.ini"
+    echo -e "  ${GREEN}✓ .user.ini actualizado${NC}"
+
+    echo ""
+    echo -e "  ${YELLOW}[2/3] Corrigiendo campo 'status' en usuarios (necesario para sincronización)...${NC}"
+    python3 -c "
+import json
+path='$DB_USERS'
+try:
+    users=json.load(open(path))
+    changed=0
+    for u in users:
+        if 'status' not in u or u['status'] not in ['active','Active','ACTIVE']:
+            u['status']='active'
+            changed+=1
+        # Asegurar UUID real (no 'admin-master')
+        if u.get('uuid','') in ['admin-master','','---']:
+            import uuid as uuidlib
+            u['uuid']=str(uuidlib.uuid4())
+            changed+=1
+    if changed:
+        open(path,'w').write(json.dumps(users,indent=4,ensure_ascii=False))
+        print(f'  Corregidos {changed} campo(s)')
+    else:
+        print('  Todos los usuarios ya tienen status correcto')
+except Exception as e:
+    print('  Error: '+str(e))
+" 2>/dev/null
+
+    echo ""
+    echo -e "  ${YELLOW}[3/3] Reiniciando servicios...${NC}"
+    for FPM_SVC in $(systemctl list-units --type=service --state=active 2>/dev/null | grep -oP 'php\S*fpm\S*\.service' | head -3); do
+        systemctl restart "$FPM_SVC" 2>/dev/null && echo -e "  ${GREEN}✓ $FPM_SVC${NC}"
+    done
+    systemctl restart apache2 2>/dev/null && echo -e "  ${GREEN}✓ Apache reiniciado${NC}"
+
+    echo ""
+    echo -e "  ${BOLD}Nuevo límite PHP:${NC} ${GREEN}$(php -r 'echo ini_get("upload_max_filesize");' 2>/dev/null)${NC}"
+    echo -e "  ${GREEN}✓ Listo — ahora podés subir APKs desde el panel web y las apps se sincronizarán${NC}"
+    sleep 3
+}
+
+# ── [14] Backup completo ──────────────────────────────────────
+do_backup() {
+    mkdir -p "$BACKUP_DIR"
+    BKNAME="$BACKUP_DIR/backup-$(date +%Y%m%d_%H%M%S).tar.gz"
+    echo -e "\n${YELLOW}Creando backup completo (archivos + clientes + configs)...${NC}"
+    tar -czf "$BKNAME" -C "$PANEL_DIR" . 2>/dev/null
+    echo -e "  ${GREEN}✓ Backup: $BKNAME${NC}"
+    echo -e "  ${GREEN}  Tamaño: $(du -sh $BKNAME | cut -f1)${NC}"
+    # Backup separado solo del JSON de usuarios
+    if [ -f "$DB_USERS" ]; then
+        cp "$DB_USERS" "$BACKUP_DIR/usuarios_$(date +%Y%m%d_%H%M%S).json"
+        echo -e "  ${GREEN}✓ Clientes guardados por separado${NC}"
+    fi
+    sleep 3
+}
+
+# ── [15] Restaurar ────────────────────────────────────────────
+do_restore() {
+    title
+    echo -e "  ${BOLD}Backups disponibles${NC}\n"
+    mkdir -p "$BACKUP_DIR"
+    BACKUPS=($(ls -t "$BACKUP_DIR"/*.tar.gz 2>/dev/null))
+    if [ ${#BACKUPS[@]} -eq 0 ]; then
+        echo -e "  ${RED}No hay backups${NC}"; sleep 2; return
+    fi
+    for i in "${!BACKUPS[@]}"; do
+        echo -e "  ${GREEN}[$((i+1))]${NC} $(basename ${BACKUPS[$i]}) — $(du -sh ${BACKUPS[$i]} | cut -f1)"
+    done
+    echo -ne "\n  Elegí número (0=cancelar): "
+    read CHOICE
+    [ "$CHOICE" = "0" ] && return
+    SELECTED="${BACKUPS[$((CHOICE-1))]}"
+    if [ -f "$SELECTED" ]; then
+        echo -e "\n  ${YELLOW}Restaurando...${NC}"
+        find "$PANEL_DIR" -mindepth 1 -delete 2>/dev/null
+        tar -xzf "$SELECTED" -C "$PANEL_DIR"
+        chown -R www-data:www-data "$PANEL_DIR"
+        chmod -R 755 "$PANEL_DIR"
+        chmod 644 "$PANEL_DIR/.htaccess" 2>/dev/null
+        chmod -R 775 "$PANEL_DIR/database" "$PANEL_DIR/db" 2>/dev/null
+        systemctl restart apache2
+        echo -e "  ${GREEN}✓ Restauración completa${NC}"
+    fi
+    sleep 3
+}
+
+# ── [16] Exportar ─────────────────────────────────────────────
+do_export() {
+    mkdir -p "$BACKUP_DIR"
+    EXPORT="$BACKUP_DIR/migrar-dtpanel-$(date +%Y%m%d_%H%M%S).tar.gz"
+    echo -e "\n${YELLOW}Exportando para migración de VPS...${NC}"
+    tar -czf "$EXPORT" -C "$PANEL_DIR" . 2>/dev/null
+    SIZE=$(du -sh "$EXPORT" | cut -f1)
+    title
+    echo -e "  ${GREEN}✓ Archivo: $EXPORT ($SIZE)${NC}\n"
+    echo -e "  ${BOLD}Pasos para el nuevo VPS:${NC}\n"
+    echo -e "  ${YELLOW}1.${NC} scp $EXPORT root@NUEVA_IP:/tmp/"
+    echo -e "  ${YELLOW}2.${NC} apt install -y apache2 php php-sqlite3 php-mbstring php-curl git python3"
+    echo -e "     a2enmod rewrite && mkdir -p /var/www/html"
+    echo -e "     tar -xzf /tmp/$(basename $EXPORT) -C /var/www/html"
+    echo -e "     chown -R www-data:www-data /var/www/html"
+    echo -e "     chmod 644 /var/www/html/.htaccess"
+    echo -e "     systemctl restart apache2"
+    echo -e "  ${YELLOW}3.${NC} wget https://raw.githubusercontent.com/eze1087/PanelwebDtunel2/main/install.sh"
+    echo -e "     bash install.sh"
+    echo ""
+    echo -e "  ${CYAN}WA: 3455236886 | TG: @El_NeNe_Sando${NC}"
+    pause
+}
+
+# ── [17] Desinstalar ──────────────────────────────────────────
+do_uninstall() {
+    title
+    echo -e "  ${BRED}${BOLD}DESINSTALAR PANEL${NC}"
+    echo -e "  ${RED}Esta acción eliminará todos los archivos del panel.${NC}"
+    echo -e "  ${YELLOW}Se creará un backup antes de desinstalar.${NC}"
+    echo ""
+    echo -ne "  ${RED}Escribí ${BOLD}SI${NC}${RED} para confirmar (o Enter para cancelar): ${NC}"
+    read CONF
+    if [[ "$CONF" == "SI" ]]; then
+        echo ""
+        echo -e "  ${YELLOW}[1/4] Creando backup de seguridad...${NC}"
+        mkdir -p "$BACKUP_DIR"
+        BKNAME="$BACKUP_DIR/backup-antes-desinst-$(date +%Y%m%d_%H%M%S).tar.gz"
+        tar -czf "$BKNAME" -C "$PANEL_DIR" . 2>/dev/null \
+            && echo -e "  ${GREEN}✓ Backup guardado: $BKNAME${NC}" \
+            || echo -e "  ${YELLOW}⚠ Backup falló, continuando...${NC}"
+
+        echo -e "  ${YELLOW}[2/4] Eliminando archivos del panel...${NC}"
+        rm -rf "${PANEL_DIR:?}"/* "${PANEL_DIR:?}"/.[!.]* 2>/dev/null
+        REMAINING=$(find "$PANEL_DIR" -mindepth 1 2>/dev/null | wc -l)
+        if [ "$REMAINING" -eq 0 ]; then
+            echo -e "  ${GREEN}✓ Archivos eliminados${NC}"
+        else
+            echo -e "  ${YELLOW}⚠ Quedan $REMAINING items, forzando...${NC}"
+            find "$PANEL_DIR" -mindepth 1 -depth -exec rm -rf {} + 2>/dev/null
+            echo -e "  ${GREEN}✓ Limpieza forzada completada${NC}"
+        fi
+
+        echo -e "  ${YELLOW}[3/4] Eliminando comando 'panel'...${NC}"
+        rm -f /usr/local/bin/panel 2>/dev/null \
+            && echo -e "  ${GREEN}✓ Comando eliminado${NC}" \
+            || echo -e "  ${YELLOW}⚠ No se encontró el comando${NC}"
+
+        echo -e "  ${YELLOW}[4/4] Deteniendo Apache...${NC}"
+        systemctl stop apache2 2>/dev/null \
+            && echo -e "  ${GREEN}✓ Apache detenido${NC}" \
+            || echo -e "  ${YELLOW}⚠ Apache no estaba activo${NC}"
+
+        echo ""
+        echo -e "${BCYAN}──────────────────────────────────────────────────────────────${NC}"
+        echo -e "  ${GREEN}${BOLD}Panel desinstalado correctamente${NC}"
+        [ -f "$BKNAME" ] && echo -e "  ${CYAN}Backup en:${NC} $BKNAME"
+        echo -e "${BCYAN}──────────────────────────────────────────────────────────────${NC}"
+        echo ""
+        exit 0
+    else
+        echo -e "  ${YELLOW}Desinstalación cancelada.${NC}"
+        sleep 2
+    fi
+}
+
+# ── [18] Estadísticas completas ───────────────────────────────
+do_stats() {
+    title
+    echo -e "  ${BOLD}Estadisticas e ingresos${NC}\n"
+    [ ! -f "$DB_USERS" ] && echo -e "  ${RED}Sin datos de usuarios${NC}" && pause && return
+    export DTDB_USERS="$DB_USERS"
+    export DTDB_TXNS="$PANEL_DIR/db/transacoes.json"
+    python3 << 'PYSTATS'
+import json,os
+from datetime import datetime,timedelta
+from collections import Counter
+DB_USERS=os.environ.get('DTDB_USERS','/var/www/html/db/usuarios.json')
+DB_TXNS=os.environ.get('DTDB_TXNS','/var/www/html/db/transacoes.json')
+R='\033[0;31m';G='\033[0;32m';Y='\033[1;33m';C='\033[0;36m';B='\033[1m';N='\033[0m'
+now=datetime.now();today=now.date()
+sem_ini=today-timedelta(days=today.weekday())
+mes_ini=today.replace(day=1)
+mes_ant=(mes_ini-timedelta(days=1)).replace(day=1)
+try:    users=json.load(open(DB_USERS))
+except: users=[]
+try:    txns=json.load(open(DB_TXNS))
+except: txns=[]
+total=len(users);admins=sum(1 for u in users if u.get('role')=='admin')
+blocked=sum(1 for u in users if u.get('is_blocked',False))
+ilimit=sum(1 for u in users if '2099' in str(u.get('expires_at','')))
+vencidos=por_vencer=activos=0
+for u in users:
+    if u.get('role')=='admin': continue
+    exp=u.get('expires_at','')
+    if not exp: continue
+    try:
+        diff=(datetime.strptime(exp[:19],'%Y-%m-%d %H:%M:%S')-now).days
+        if diff<0: vencidos+=1
+        elif diff<5: por_vencer+=1
+        else: activos+=1
+    except: pass
+def pd(s):
+    if not s: return None
+    try:
+        if isinstance(s,(int,float)): return datetime.fromtimestamp(s).date()
+        return datetime.strptime(str(s)[:19],'%Y-%m-%d %H:%M:%S').date()
+    except: return None
+reg_sem=reg_mes=reg_ant=0
+for u in users:
+    if u.get('role')=='admin': continue
+    d=pd(u.get('created_at',''))
+    if d is None: continue
+    if d>=sem_ini: reg_sem+=1
+    if d>=mes_ini: reg_mes+=1
+    if mes_ant<=d<mes_ini: reg_ant+=1
+pagados=[t for t in txns if t.get('status')=='pago']
+pend=[t for t in txns if t.get('status')=='pendente']
+is_sem=im=ia=it=0.0;cs=cm=ca=0
+for t in pagados:
+    p=float(t.get('price',0));d=pd(t.get('created_at',0));it+=p
+    if d is None: continue
+    if d>=sem_ini: is_sem+=p;cs+=1
+    if d>=mes_ini: im+=p;cm+=1
+    if mes_ant<=d<mes_ini: ia+=p;ca+=1
+def crec(cur,prev):
+    if prev==0: return f"{Y}N/D{N}"
+    pct=(cur-prev)/prev*100
+    return f"{G}+{pct:.1f}%{N}" if pct>=0 else f"{R}{pct:.1f}%{N}"
+hist=[]
+for i in range(5,-1,-1):
+    ref=mes_ini
+    for _ in range(i): ref=(ref-timedelta(days=1)).replace(day=1)
+    sig=(ref.replace(day=28)+timedelta(days=4)).replace(day=1)
+    lbl=ref.strftime('%b/%y').capitalize()
+    hi=sum(float(t.get('price',0)) for t in pagados if (d:=pd(t.get('created_at',0))) and d is not None and ref<=d<sig)
+    hr=sum(1 for u in users if u.get('role')!='admin' and (d:=pd(u.get('created_at',''))) and d is not None and ref<=d<sig)
+    hist.append((lbl,hi,hr))
+planes=Counter(t.get('plan_name','Desconocido') for t in pagados if t.get('plan_name'))
+def sep(t=''):
+    if t: print(f"  {B}--- {t} "+"─"*(40-len(t))+N)
+    else: print("  "+"─"*46)
+sep('CLIENTES')
+print(f"  Total registrados:      {B}{total}{N}")
+print(f"  Activos:                {G}{activos}{N}")
+print(f"  Ilimitados/Admin:       {C}{ilimit+admins}{N}")
+print(f"  Por vencer (< 5 dias):  {Y}{por_vencer}{N}")
+print(f"  Vencidos:               {R}{vencidos}{N}")
+print(f"  Bloqueados:             {R}{blocked}{N}")
+print()
+sep('NUEVOS CLIENTES')
+print(f"  Esta semana:            {G}{reg_sem}{N}  registrados")
+print(f"  Este mes:               {G}{reg_mes}{N}  registrados")
+print(f"  Mes anterior:           {C}{reg_ant}{N}  registrados")
+print(f"  Crecimiento mensual:    {crec(reg_mes,reg_ant)}")
+print()
+sep('INGRESOS')
+print(f"  Esta semana:            {G}$ {is_sem:.2f}{N}  ({cs} ventas)")
+print(f"  Este mes:               {G}$ {im:.2f}{N}  ({cm} ventas)")
+print(f"  Mes anterior:           {C}$ {ia:.2f}{N}  ({ca} ventas)")
+print(f"  Crecimiento:            {crec(im,ia)}")
+print(f"  {B}Total acumulado:        {G}$ {it:.2f}{N}")
+print(f"  Pendientes de cobro:    {Y}{len(pend)} transacciones{N}")
+print()
+sep('HISTORICO 6 MESES')
+print(f"  {'MES':<10} {'INGRESOS':>10}   {'CLIENTES':>8}   EVOLUCION")
+print(f"  {'-'*10} {'-'*10}   {'-'*8}   {'-'*20}")
+mx=max((h[1] for h in hist),default=1) or 1
+for lbl,hi,hr in hist:
+    bl=int(hi/mx*18) if hi>0 else 0
+    bar=G+'#'*bl+N+'.'*(18-bl)
+    print(f"  {lbl:<10} {G}${hi:>9.2f}{N}   {C}{hr:>5} cl{N}   {bar}")
+print()
+if planes:
+    sep('PLANES MAS VENDIDOS')
+    tv=sum(planes.values())
+    for plan,cant in planes.most_common(5):
+        pct=cant/tv*100;bl=int(pct/100*15)
+        print(f"  {plan[:28]:<28} {G}{cant:>3}{N} ventas  {pct:>5.1f}%  {G}{'#'*bl}{N}")
+sep()
+PYSTATS
+    pause
+}
+
+# ── Helpers email ─────────────────────────────────────────────
+_email_cfg_get() {
+    KEY="$1" python3 -c "
+import json,os
+p='$EMAIL_CFG';k=os.environ['KEY']
+cfg=json.load(open(p)) if os.path.exists(p) else {}
+v=cfg.get(k,'')
+print(','.join(v) if isinstance(v,list) else str(v))
+" 2>/dev/null
+}
+_email_cfg_set() {
+    KEY="$1" VAL="$2" python3 -c "
+import json,os
+p='$EMAIL_CFG';cfg={}
+if os.path.exists(p):
+    try: cfg=json.load(open(p))
+    except: pass
+cfg[os.environ['KEY']]=os.environ['VAL']
+open(p,'w').write(json.dumps(cfg,indent=4,ensure_ascii=False))
+" 2>/dev/null
+}
+_email_set_default_tpl() {
+    python3 -c "
+import json,os
+p='$EMAIL_CFG';cfg={}
+if os.path.exists(p):
+    try: cfg=json.load(open(p))
+    except: pass
+cfg['tpl_subject']='Aviso: Tu acceso al panel vence en {dias} dias - By Elnene Panel WEB2'
+cfg['tpl_body']=chr(10).join([
+'Hola {nombre},','',
+'Te informamos que tu acceso al Panel vencera el {fecha}.','',
+'Que sucede si no renovas?',
+'  - En {dias} dias tu cuenta quedara BLOQUEADA automaticamente.',
+'  - Perderas acceso a todos los servicios del panel.',
+'  - Tus datos se conservaran pero no podras utilizarlos hasta renovar.','',
+'Para renovar contactanos:',
+'  WhatsApp: {wa}','  Telegram: {tg}','',
+'Precio de renovacion: {precio}','',
+'No esperes al ultimo momento, la renovacion es rapida y sencilla.','',
+'--------------------------------------------',
+'By Elnene Panel WEB2','{url}',
+'--------------------------------------------',
+'Mensaje automatico --- no respondas a este email.'])
+open(p,'w').write(json.dumps(cfg,indent=4,ensure_ascii=False))
+" 2>/dev/null
+}
+_email_smtp() {
+    while true; do
+        title
+        echo -e "  ${BOLD}Configurar cuenta SMTP (Gmail)${NC}\n"
+
+        # Mostrar config actual si existe
+        if [ -f "$EMAIL_CFG" ]; then
+            CU=$(_email_cfg_get smtp_user)
+            [ -n "$CU" ] && echo -e "  Cuenta actual: ${CYAN}$CU${NC}\n"
+        fi
+
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${BOLD}¿Cómo obtener la Contraseña de Aplicación de Gmail?${NC}"
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e ""
+        echo -e "  ${YELLOW}PASO 1:${NC} Abrí este link en el navegador:"
+        echo -e "  ${GREEN}  https://myaccount.google.com/apppasswords${NC}"
+        echo -e ""
+        echo -e "  ${YELLOW}PASO 2:${NC} Si pide iniciar sesión, hacélo con tu Gmail"
+        echo -e ""
+        echo -e "  ${YELLOW}PASO 3:${NC} En 'Nombre de la app' escribí: ${BOLD}Panel WEB2${NC}"
+        echo -e "          y hacé clic en ${BOLD}Crear${NC}"
+        echo -e ""
+        echo -e "  ${YELLOW}PASO 4:${NC} Google te da una clave de ${BOLD}16 letras${NC} (ej: abcd efgh ijkl mnop)"
+        echo -e "          Copiá esa clave SIN los espacios: ${BOLD}abcdefghijklmnop${NC}"
+        echo -e ""
+        echo -e "  ${RED}IMPORTANTE:${NC} NO uses tu contraseña normal de Gmail."
+        echo -e "              Si no ves 'Contraseñas de app', activá primero"
+        echo -e "              la Verificación en 2 pasos en tu cuenta Google."
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${GREEN}[1]${NC} Configurar ahora (ya tengo mi Contraseña de App)"
+        echo -e "  ${NC}[0]${NC} Volver"
+        echo -ne "\n  Opción: "; read SMTPOPT
+        [ "$SMTPOPT" = "0" ] || [ -z "$SMTPOPT" ] && return
+
+        echo ""
+        echo -ne "  Email Gmail (quien envía): "; read SMTP_USER
+        [ -z "$SMTP_USER" ] && continue
+
+        echo -ne "  Contraseña de app (16 chars): "; read -s SMTP_PASS; echo
+        [ -z "$SMTP_PASS" ] && continue
+
+        # Quitar espacios de la contraseña (Google la muestra con espacios "abcd efgh ijkl mnop")
+        SMTP_PASS="${SMTP_PASS// /}"
+
+        # Validar longitud de la App Password
+        PASS_LEN=${#SMTP_PASS}
+        if [ "$PASS_LEN" -ne 16 ]; then
+            echo -e "\n  ${YELLOW}⚠ La contraseña tiene $PASS_LEN caracteres. Las App Passwords tienen exactamente 16.${NC}"
+            echo -e "  ${YELLOW}  Asegurate de copiar la clave completa sin espacios.${NC}"
+            echo -ne "\n  ¿Continuar de todos modos? (s/N): "; read FORZAR
+            [[ ! "$FORZAR" =~ ^[sS]$ ]] && continue
+        fi
+
+        echo -ne "  Nombre visible [By Elnene Panel WEB2]: "; read FROM_NAME
+        FROM_NAME="${FROM_NAME:-By Elnene Panel WEB2}"
+
+        # Guardar config
+        SMTP_USER="$SMTP_USER" SMTP_PASS="$SMTP_PASS" FROM_NAME="$FROM_NAME" python3 -c "
+import json,os
+p='$EMAIL_CFG';cfg={}
+if os.path.exists(p):
+    try: cfg=json.load(open(p))
+    except: pass
+cfg.update({'smtp_host':'smtp.gmail.com','smtp_port':587,
+    'smtp_user':os.environ['SMTP_USER'],'smtp_pass':os.environ['SMTP_PASS'],
+    'from_name':os.environ['FROM_NAME'],'from_email':os.environ['SMTP_USER']})
+open(p,'w').write(json.dumps(cfg,indent=4,ensure_ascii=False))
+print('OK')" && echo -e "\n  ${GREEN}✓ SMTP guardado${NC}" || { echo -e "  ${RED}Error al guardar config${NC}"; sleep 2; continue; }
+
+        # Test de conexión con error detallado
+        echo -ne "\n  ¿Probar envío a $SMTP_USER? (s/N): "; read TST
+        if [[ "$TST" =~ ^[sS]$ ]]; then
+            echo -e "  ${YELLOW}Conectando con Gmail...${NC}"
+            RESULT=$(DTCFG="$EMAIL_CFG" python3 << 'PYTEST'
+import json,os,smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+try:
+    cfg=json.load(open(os.environ['DTCFG']))
+    msg=MIMEMultipart()
+    msg['From']=cfg.get('from_name','Panel')+' <'+cfg['smtp_user']+'>'
+    msg['To']=cfg['smtp_user']
+    msg['Subject']='✓ Test By Elnene Panel WEB2 - Email OK'
+    msg.attach(MIMEText('El servidor de email esta funcionando correctamente.\n\nEste mensaje confirma que el SMTP de Gmail esta bien configurado en tu panel.','plain','utf-8'))
+    s=smtplib.SMTP(cfg['smtp_host'],cfg['smtp_port'],timeout=15)
+    s.ehlo()
+    s.starttls()
+    s.ehlo()
+    s.login(cfg['smtp_user'],cfg['smtp_pass'])
+    s.send_message(msg)
+    s.quit()
+    print('OK')
+except smtplib.SMTPAuthenticationError as e:
+    print('AUTH_ERROR: Autenticacion rechazada. '+str(e))
+except smtplib.SMTPConnectError as e:
+    print('CONNECT_ERROR: No se pudo conectar a smtp.gmail.com. '+str(e))
+except smtplib.SMTPException as e:
+    print('SMTP_ERROR: '+str(e))
+except Exception as e:
+    print('ERROR: '+str(e))
+PYTEST
+)
+            if echo "$RESULT" | grep -q "^OK"; then
+                echo -e "  ${GREEN}✓ Email de prueba enviado correctamente a $SMTP_USER${NC}"
+                echo -e "  ${GREEN}  Revisá tu bandeja de entrada.${NC}"
+                sleep 3; return
+            else
+                echo ""
+                echo -e "  ${RED}✗ Error al conectar con Gmail:${NC}"
+                echo -e "  ${YELLOW}  $RESULT${NC}"
+                echo ""
+                if echo "$RESULT" | grep -q "AUTH_ERROR"; then
+                    echo -e "  ${BOLD}Posibles causas:${NC}"
+                    echo -e "  • La contraseña ingresada NO es una App Password"
+                    echo -e "  • Copiaste tu contraseña normal de Gmail (no sirve)"
+                    echo -e "  • La App Password fue revocada — generá una nueva en:"
+                    echo -e "    ${GREEN}https://myaccount.google.com/apppasswords${NC}"
+                    echo -e "  • La cuenta no tiene Verificación en 2 pasos activada"
+                fi
+                echo ""
+                echo -ne "  ¿Volver a intentar con otra contraseña? (s/N): "; read RETRY
+                [[ "$RETRY" =~ ^[sS]$ ]] && continue || { sleep 1; return; }
+            fi
+        fi
+        sleep 2; return
+    done
+}
+_email_recipients() {
+    title;echo -e "  ${BOLD}Emails copia admin${NC}\n"
+    echo -e "  ${YELLOW}Reciben BCC de cada notificacion. Separa con coma.${NC}\n"
+    CUR=$(_email_cfg_get "admin_recipients")
+    echo -e "  Actuales: ${CYAN}${CUR:-Ninguno}${NC}\n"
+    echo -ne "  Nuevos emails (ENTER=cancelar): "; read NEWREC; [ -z "$NEWREC" ] && return
+    _email_cfg_set "admin_recipients" "$NEWREC" && echo -e "  ${GREEN}Guardado${NC}"; sleep 2
+}
+_email_contact() {
+    title;echo -e "  ${BOLD}Datos de contacto para renovacion${NC}\n"
+    echo -e "  WhatsApp:  ${CYAN}$(_email_cfg_get contact_wa)${NC}"
+    echo -e "  Telegram:  ${CYAN}$(_email_cfg_get contact_tg)${NC}"
+    echo -e "  Precio:    ${CYAN}$(_email_cfg_get precio_renovacion)${NC}\n"
+    echo -ne "  WhatsApp (ej: +5493455236886): "; read NEW_WA
+    echo -ne "  Telegram (ej: @El_NeNe_Sando):  "; read NEW_TG
+    echo -ne "  Precio renovacion (ej: \$5 USD): "; read NEW_PR
+    NEW_WA="$NEW_WA" NEW_TG="$NEW_TG" NEW_PR="$NEW_PR" python3 -c "
+import json,os
+p='$EMAIL_CFG';cfg={}
+if os.path.exists(p):
+    try: cfg=json.load(open(p))
+    except: pass
+for k,e in [('contact_wa','NEW_WA'),('contact_tg','NEW_TG'),('precio_renovacion','NEW_PR')]:
+    v=os.environ.get(e,'').strip()
+    if v: cfg[k]=v
+open(p,'w').write(json.dumps(cfg,indent=4,ensure_ascii=False))" && echo -e "  ${GREEN}Datos guardados${NC}"; sleep 2
+}
+_email_template() {
+    while true; do
+        title;echo -e "  ${BOLD}Plantilla de mensaje${NC}\n"
+        echo -e "  Variables: {nombre} {email} {fecha} {dias} {wa} {tg} {precio} {url}\n"
+        DTCFG="$EMAIL_CFG" python3 -c "
+import json,os
+cfg=json.load(open(os.environ['DTCFG'])) if os.path.exists(os.environ['DTCFG']) else {}
+print('  Asunto: '+cfg.get('tpl_subject','(sin asunto)'))
+print();print('  --- CUERPO -----------------------------------------------')
+for line in cfg.get('tpl_body','(sin plantilla)').split(chr(10)): print('  '+line)
+print('  ----------------------------------------------------------')
+" 2>/dev/null
+        echo "";echo -e "  ${GREEN}[1]${NC} Editar asunto"
+        echo -e "  ${GREEN}[2]${NC} Restaurar plantilla predeterminada"
+        echo -e "  ${NC}[0]${NC} Volver"
+        echo -ne "\n  Opcion: "; read TOPT
+        case $TOPT in
+            1) echo -ne "\n  Nuevo asunto: "; read NS; [ -z "$NS" ] && continue
+               _email_cfg_set "tpl_subject" "$NS" && echo -e "  ${GREEN}Asunto guardado${NC}"; sleep 2;;
+            2) _email_set_default_tpl && echo -e "  ${GREEN}Plantilla restaurada${NC}"; sleep 2;;
+            0) return;;
+        esac
+    done
+}
+_email_send_now() {
+    title;echo -e "  ${BOLD}Enviar notificaciones AHORA${NC}\n"
+    [ ! -f "$EMAIL_CFG" ] && echo -e "  ${RED}Configura el SMTP primero (opcion 1)${NC}" && sleep 3 && return
+    [ -z "$(_email_cfg_get smtp_user)" ] && echo -e "  ${RED}SMTP no configurado${NC}" && sleep 3 && return
+    [ -z "$(_email_cfg_get tpl_subject)" ] && _email_set_default_tpl
+    echo -ne "  Dias antes del vencimiento [3]: "; read DIAS; DIAS="${DIAS:-3}"
+    echo -e "\n  ${YELLOW}Buscando usuarios que vencen en $DIAS dias...${NC}\n"
+    DTDB_U="$DB_USERS" DTCFG="$EMAIL_CFG" DTDIAS="$DIAS" DTIP="http://$SERVER_IP" python3 << 'PYSEND'
+import json,os,smtplib
+from datetime import datetime,timedelta
+from email.mime.text import MIMEText;from email.mime.multipart import MIMEMultipart
+DB_USERS=os.environ['DTDB_U'];CFG_FILE=os.environ['DTCFG']
+dias_antes=int(os.environ.get('DTDIAS','3'));panel_url=os.environ.get('DTIP','http://tu-panel.com')
+try: users=json.load(open(DB_USERS));cfg=json.load(open(CFG_FILE))
+except Exception as e: print(f"  Error: {e}");exit(1)
+smtp_host=cfg.get('smtp_host','smtp.gmail.com');smtp_port=int(cfg.get('smtp_port',587))
+smtp_user=cfg.get('smtp_user','');smtp_pass=cfg.get('smtp_pass','')
+from_name=cfg.get('from_name','By Elnene Panel WEB2');admin_rec=cfg.get('admin_recipients','')
+contact_wa=cfg.get('contact_wa','No disponible');contact_tg=cfg.get('contact_tg','No disponible')
+precio=cfg.get('precio_renovacion','Consulta con el admin')
+tpl_subj=cfg.get('tpl_subject','Aviso: Tu acceso vence en {dias} dias')
+tpl_body=cfg.get('tpl_body','Tu acceso vence el {fecha}.')
+now=datetime.now();target=(now+timedelta(days=dias_antes)).strftime('%Y-%m-%d')
+to_notify=[u for u in users if not u.get('role')=='admin' and not u.get('is_blocked')
+           and u.get('expires_at','') and '2099' not in u.get('expires_at','')
+           and u.get('expires_at','')[:10]==target]
+if not to_notify: print(f"  Sin usuarios que venzan exactamente en {dias_antes} dia(s) ({target})."); exit(0)
+print(f"  Encontrados: {len(to_notify)} cliente(s)\n")
+try: server=smtplib.SMTP(smtp_host,smtp_port,timeout=15);server.starttls();server.login(smtp_user,smtp_pass)
+except Exception as e: print(f"  Error SMTP: {e}");exit(1)
+sent=errors=0
+for u in to_notify:
+    nombre=u.get('username','Cliente');email=u.get('email','');fecha=u.get('expires_at','')[:10]
+    if not email: continue
+    subj=tpl_subj.format(nombre=nombre,email=email,fecha=fecha,dias=dias_antes,wa=contact_wa,tg=contact_tg,precio=precio,url=panel_url)
+    body=tpl_body.format(nombre=nombre,email=email,fecha=fecha,dias=dias_antes,wa=contact_wa,tg=contact_tg,precio=precio,url=panel_url)
+    try:
+        msg=MIMEMultipart();msg['From']=f"{from_name} <{smtp_user}>";msg['To']=email;msg['Subject']=subj
+        if admin_rec: msg['Bcc']=admin_rec
+        msg.attach(MIMEText(body,'plain','utf-8'));server.send_message(msg)
+        print(f"  Enviado -> {nombre} <{email}>");sent+=1
+    except Exception as e: print(f"  Error -> {email}: {e}");errors+=1
+server.quit();print(f"\n  Resultado: {sent} enviado(s), {errors} error(es).")
+PYSEND
+    pause
+}
+_email_cron() {
+    CRON_STATUS=$(_email_cfg_get "cron_enabled")
+    if [ "$CRON_STATUS" = "1" ]; then
+        crontab -l 2>/dev/null | grep -v "dtpanel-notify" | crontab -
+        _email_cfg_set "cron_enabled" "0"
+        echo -e "\n  ${RED}Envio automatico desactivado${NC}"; sleep 2
+    else
+        [ -z "$(_email_cfg_get smtp_user)" ] && echo -e "  ${RED}Configura el SMTP primero (opcion 1)${NC}" && sleep 3 && return
+        [ -z "$(_email_cfg_get tpl_subject)" ] && _email_set_default_tpl
+        cat > /usr/local/bin/dtpanel-notify << 'NOTIFYEOF'
+#!/usr/bin/env python3
+import json,os,smtplib
+from datetime import datetime,timedelta
+from email.mime.text import MIMEText;from email.mime.multipart import MIMEMultipart
+DB_USERS='/var/www/html/db/usuarios.json';CFG_FILE='/var/www/html/db/.email_config.json'
+LOG_FILE='/var/log/dtpanel-notify.log'
+def log(msg):
+    with open(LOG_FILE,'a') as f: f.write(f"[{datetime.now():%Y-%m-%d %H:%M}] {msg}\n")
+try: users=json.load(open(DB_USERS));cfg=json.load(open(CFG_FILE))
+except Exception as e: log(f"Error config: {e}");exit(1)
+dias_antes=int(cfg.get('notify_days',3));smtp_host=cfg.get('smtp_host','smtp.gmail.com')
+smtp_port=int(cfg.get('smtp_port',587));smtp_user=cfg.get('smtp_user','');smtp_pass=cfg.get('smtp_pass','')
+from_name=cfg.get('from_name','By Elnene Panel WEB2');admin_rec=cfg.get('admin_recipients','')
+contact_wa=cfg.get('contact_wa','No disponible');contact_tg=cfg.get('contact_tg','No disponible')
+precio=cfg.get('precio_renovacion','Consulta con el admin');panel_url=cfg.get('panel_url','http://tu-panel.com')
+tpl_subj=cfg.get('tpl_subject','Aviso: Tu acceso vence en {dias} dias')
+tpl_body=cfg.get('tpl_body','Tu acceso vence el {fecha}.')
+now=datetime.now();target=(now+timedelta(days=dias_antes)).strftime('%Y-%m-%d')
+to_notify=[u for u in users if not u.get('role')=='admin' and not u.get('is_blocked')
+           and u.get('expires_at','') and '2099' not in u.get('expires_at','')
+           and u.get('expires_at','')[:10]==target]
+if not to_notify: log(f"Sin usuarios a notificar (target:{target})");exit(0)
+log(f"Notificando {len(to_notify)} usuario(s) que vencen el {target}")
+try: server=smtplib.SMTP(smtp_host,smtp_port,timeout=15);server.starttls();server.login(smtp_user,smtp_pass)
+except Exception as e: log(f"Error SMTP: {e}");exit(1)
+for u in to_notify:
+    nombre=u.get('username','Cliente');email=u.get('email','');fecha=u.get('expires_at','')[:10]
+    if not email: continue
+    subj=tpl_subj.format(nombre=nombre,email=email,fecha=fecha,dias=dias_antes,wa=contact_wa,tg=contact_tg,precio=precio,url=panel_url)
+    body=tpl_body.format(nombre=nombre,email=email,fecha=fecha,dias=dias_antes,wa=contact_wa,tg=contact_tg,precio=precio,url=panel_url)
+    try:
+        msg=MIMEMultipart();msg['From']=f"{from_name} <{smtp_user}>";msg['To']=email;msg['Subject']=subj
+        if admin_rec: msg['Bcc']=admin_rec
+        msg.attach(MIMEText(body,'plain','utf-8'));server.send_message(msg);log(f"OK -> {nombre} <{email}>")
+    except Exception as e: log(f"Error -> {email}: {e}")
+server.quit()
+NOTIFYEOF
+        chmod +x /usr/local/bin/dtpanel-notify
+        (crontab -l 2>/dev/null | grep -v "dtpanel-notify"; echo "0 8 * * * /usr/local/bin/dtpanel-notify") | crontab -
+        _email_cfg_set "cron_enabled" "1"
+        echo -e "\n  ${GREEN}Envio automatico activado (todos los dias a las 8:00 AM)${NC}"
+        echo -e "  ${CYAN}  Script: /usr/local/bin/dtpanel-notify${NC}"
+        echo -e "  ${CYAN}  Log:    /var/log/dtpanel-notify.log${NC}"; sleep 3
+    fi
+}
+
+# ── [20] Gestionar APK base ───────────────────────────────────
+do_upload_apk_base() {
+    title
+    echo -e "  ${BOLD}Gestionar APK base${NC}\n"
+    APK_DIR="$PANEL_DIR/apk_base"
+    mkdir -p "$APK_DIR"
+    chown www-data:www-data "$APK_DIR" 2>/dev/null
+    chmod 775 "$APK_DIR" 2>/dev/null
+
+    # Mostrar bases ya cargadas
+    echo -e "  ${BOLD}Bases en el panel:${NC}"
+    BASES=($(ls "$APK_DIR"/*.apk 2>/dev/null))
+    if [ ${#BASES[@]} -eq 0 ]; then
+        echo -e "  ${YELLOW}  (ninguna base cargada aun)${NC}"
+    else
+        for f in "${BASES[@]}"; do
+            SIZE=$(du -sh "$f" 2>/dev/null | cut -f1)
+            echo -e "  ${GREEN}✓${NC} $(basename $f)  ${CYAN}(${SIZE})${NC}"
+        done
+    fi
+
+    echo ""
+    echo -e "  ${GREEN}[1]${NC} Seleccionar APK detectada en el servidor"
+    echo -e "  ${GREEN}[2]${NC} Ingresar ruta manualmente"
+    echo -e "  ${GREEN}[3]${NC} Eliminar una APK base"
+    echo -e "  ${NC}[0]${NC} Volver"
+    echo -ne "\n  Opcion: "; read AOPT
+
+    case $AOPT in
+        1)
+            # Buscar APKs en ubicaciones comunes
+            echo -e "\n  ${YELLOW}Buscando APKs en el servidor...${NC}\n"
+            mapfile -t FOUND_APKS < <(find /root /home /tmp /var/www /opt -maxdepth 3 -name "*.apk" 2>/dev/null | sort)
+
+            if [ ${#FOUND_APKS[@]} -eq 0 ]; then
+                echo -e "  ${RED}No se encontraron archivos .apk en /root, /home, /tmp, /opt${NC}"
+                echo -e "  ${YELLOW}Subí el APK al servidor primero (ej: scp archivo.apk root@IP:/root/)${NC}"
+                sleep 3; return
+            fi
+
+            echo -e "  ${BOLD}APKs encontradas:${NC}"
+            for i in "${!FOUND_APKS[@]}"; do
+                SIZE=$(du -sh "${FOUND_APKS[$i]}" 2>/dev/null | cut -f1)
+                NAME=$(basename "${FOUND_APKS[$i]}")
+                echo -e "  ${GREEN}[$((i+1))]${NC} ${NAME}  ${CYAN}(${SIZE})${NC}"
+                echo -e "       ${YELLOW}${FOUND_APKS[$i]}${NC}"
+            done
+            echo -e "  ${NC}[0]${NC} Cancelar"
+            echo -ne "\n  Elegí el número: "; read NSEL
+            [ "$NSEL" = "0" ] || [ -z "$NSEL" ] && return
+            [[ ! "$NSEL" =~ ^[0-9]+$ ]] && echo -e "  ${RED}Número inválido${NC}" && sleep 2 && return
+            APKPATH="${FOUND_APKS[$((NSEL-1))]}"
+            [ -z "$APKPATH" ] || [ ! -f "$APKPATH" ] && echo -e "  ${RED}Número inválido${NC}" && sleep 2 && return
+            APKNAME=$(basename "$APKPATH")
+            cp "$APKPATH" "$APK_DIR/$APKNAME" \
+                && chmod 644 "$APK_DIR/$APKNAME" \
+                && echo -e "\n  ${GREEN}✓ APK base copiada: $APKNAME${NC}" \
+                || echo -e "  ${RED}Error al copiar${NC}"
+            sleep 3;;
+        2)
+            echo -e "\n  ${YELLOW}Ingresá la ruta COMPLETA del .apk:${NC}"
+            echo -e "  (Ej: /root/ElNene_full_v4.5.12.apk)\n"
+            echo -ne "  Ruta del archivo: "; read APKPATH
+            [ -z "$APKPATH" ] && return
+            [ ! -f "$APKPATH" ] && echo -e "  ${RED}Archivo no encontrado: $APKPATH${NC}" && sleep 3 && return
+            [[ "$APKPATH" != *.apk ]] && echo -e "  ${RED}El archivo debe ser .apk${NC}" && sleep 2 && return
+            APKNAME=$(basename "$APKPATH")
+            cp "$APKPATH" "$APK_DIR/$APKNAME" \
+                && chmod 644 "$APK_DIR/$APKNAME" \
+                && echo -e "  ${GREEN}✓ APK base copiada: $APKNAME${NC}" \
+                || echo -e "  ${RED}Error al copiar${NC}"
+            sleep 3;;
+        3)
+            BASES_LIST=($(ls "$APK_DIR"/*.apk 2>/dev/null | xargs -I{} basename {} 2>/dev/null))
+            if [ ${#BASES_LIST[@]} -eq 0 ]; then
+                echo -e "  ${YELLOW}No hay bases para eliminar${NC}"; sleep 2; return
+            fi
+            echo -e "\n  Seleccioná el número a eliminar (0=cancelar):"
+            for i in "${!BASES_LIST[@]}"; do
+                echo -e "  ${GREEN}[$((i+1))]${NC} ${BASES_LIST[$i]}"
+            done
+            echo -ne "\n  N: "; read NDEL
+            [ "$NDEL" = "0" ] || [ -z "$NDEL" ] && return
+            FNAME="${BASES_LIST[$((NDEL-1))]}"
+            [ -z "$FNAME" ] && echo -e "  ${RED}Número inválido${NC}" && sleep 2 && return
+            rm -f "$APK_DIR/$FNAME" \
+                && echo -e "  ${GREEN}✓ Eliminada: $FNAME${NC}" \
+                || echo -e "  ${RED}Error${NC}"
+            sleep 2;;
+        0) return;;
+        *) echo -e "  ${RED}Opción inválida${NC}"; sleep 1;;
+    esac
+}
+
+# ── [19] Notificaciones email ─────────────────────────────────
+do_config_email() {
+    while true; do
+        title
+        echo -e "  ${BOLD}Notificaciones por email${NC}\n"
+        if [ -f "$EMAIL_CFG" ]; then
+            SU=$(_email_cfg_get smtp_user);CR=$(_email_cfg_get admin_recipients);CE=$(_email_cfg_get cron_enabled)
+            echo -e "  Cuenta SMTP:  ${CYAN}${SU:-No configurado}${NC}"
+            echo -e "  Copia admin:  ${CYAN}${CR:-No configurado}${NC}"
+            echo -e "  Envio auto:   $([ "$CE" = "1" ] && echo "${GREEN}ACTIVO (diario 8 AM)${NC}" || echo "${RED}INACTIVO${NC}")"
+        else
+            echo -e "  ${YELLOW}Sin configurar aun${NC}"
+        fi
+        echo ""
+        echo -e "  ${GREEN}[1]${NC} Configurar cuenta SMTP (Gmail)"
+        echo -e "  ${GREEN}[2]${NC} Editar emails copia admin"
+        echo -e "  ${GREEN}[3]${NC} Editar datos de contacto (WA/TG/precio)"
+        echo -e "  ${GREEN}[4]${NC} Ver/editar plantilla de mensaje"
+        echo -e "  ${GREEN}[5]${NC} Enviar notificaciones AHORA (manual)"
+        CE=$(_email_cfg_get cron_enabled)
+        echo -e "  ${GREEN}[6]${NC} $([ "$CE" = "1" ] && echo "Desactivar" || echo "Activar") envio automatico diario"
+        echo -e "  ${NC}[0]${NC} Volver"
+        echo -ne "\n  Opcion: "; read EOPT
+        case $EOPT in
+            1) _email_smtp;;
+            2) _email_recipients;;
+            3) _email_contact;;
+            4) _email_template;;
+            5) _email_send_now;;
+            6) _email_cron;;
+            0) return;;
+            *) echo -e "  ${RED}Invalido${NC}"; sleep 1;;
+        esac
+    done
+}
+
+
+# ── Loop principal ────────────────────────────────────────────
+# ── [22] SSL / HTTPS con Let's Encrypt ───────────────────────
+do_ssl() {
+    title
+    echo -e "  ${BOLD}🔒 Instalar HTTPS — Let's Encrypt${NC}\n"
+    echo -e "  ${DIM}Instala un certificado SSL gratuito para tu dominio.${NC}"
+    echo -e "  ${CYAN}Requisito:${NC} el dominio debe apuntar a la IP ${GREEN}${SERVER_IP}${NC}"
+    echo -e "  ${CYAN}Puerto 80 y 443${NC} deben estar abiertos en el firewall.\n"
+
+    # Mostrar cert existente si hay
+    if command -v certbot &>/dev/null; then
+        local EXISTING=$(certbot certificates 2>/dev/null | grep "Domains:" | awk '{print $2}')
+        if [ -n "$EXISTING" ]; then
+            echo -e "  ${GREEN}Certificado activo:${NC} ${CYAN}${EXISTING}${NC}"
+            echo -e "  ${DIM}Para renovar manualmente: certbot renew${NC}\n"
+            echo -e "  ${GREEN}[1]${NC} Instalar/renovar certificado"
+            echo -e "  ${GREEN}[2]${NC} Revocar y eliminar certificado"
+            echo -e "  ${NC}[0]${NC} Volver"
+            echo -ne "\n  Opción: "; read SSLOPT
+            case $SSLOPT in
+                2)
+                    echo -ne "\n  ${RED}¿Seguro que querés revocar ${EXISTING}? (s/N): ${NC}"; read CONFIRM
+                    [[ "$CONFIRM" != "s" && "$CONFIRM" != "S" ]] && return
+                    certbot delete --cert-name "$EXISTING" --non-interactive 2>&1
+                    echo -e "  ${GREEN}Certificado eliminado.${NC}"; pause; return;;
+                0|"") return;;
+            esac
+        fi
+    fi
+
+    echo -ne "\n  Dominio (ej: panelweb2.elnene.site): "
+    read SSL_DOMAIN
+    [ -z "$SSL_DOMAIN" ] && echo -e "  ${YELLOW}Cancelado${NC}" && sleep 1 && return
+
+    echo -ne "  Email para avisos del certificado: "
+    read SSL_EMAIL
+    [ -z "$SSL_EMAIL" ] && SSL_EMAIL="admin@${SSL_DOMAIN}"
+
+    # Verificar que el dominio resuelve a esta IP
+    echo -e "\n  ${YELLOW}Verificando DNS de ${SSL_DOMAIN}...${NC}"
+    RESOLVED_IP=$(dig +short "$SSL_DOMAIN" 2>/dev/null | head -1)
+    [ -z "$RESOLVED_IP" ] && RESOLVED_IP=$(nslookup "$SSL_DOMAIN" 2>/dev/null | grep "Address:" | tail -1 | awk '{print $2}')
+    if [ -n "$RESOLVED_IP" ] && [ "$RESOLVED_IP" != "$SERVER_IP" ]; then
+        echo -e "  ${YELLOW}⚠ El dominio resuelve a ${CYAN}${RESOLVED_IP}${NC}, no a ${GREEN}${SERVER_IP}${NC}"
+        echo -e "  ${DIM}Si acabás de configurar el DNS, esperá hasta 10 min y volvé a intentar.${NC}"
+        echo -ne "  ¿Continuar de todas formas? (s/N): "; read DNSOK
+        [[ "$DNSOK" != "s" && "$DNSOK" != "S" ]] && return
+    fi
+
+    echo -e "\n  ${YELLOW}[1/3] Instalando certbot...${NC}"
+    apt-get install -y certbot python3-certbot-apache -qq 2>&1 | grep -E "^(Get|Inst|Error|E:)" || true
+
+    if ! command -v certbot &>/dev/null; then
+        echo -e "  ${RED}Error al instalar certbot. Ejecutá manualmente:${NC}"
+        echo -e "  ${DIM}apt install -y certbot python3-certbot-apache${NC}"
+        pause; return
+    fi
+
+    echo -e "  ${YELLOW}[2/3] Solicitando certificado para ${CYAN}${SSL_DOMAIN}${NC}..."
+    certbot --apache -d "$SSL_DOMAIN" --non-interactive --agree-tos -m "$SSL_EMAIL" 2>&1
+    SSL_RESULT=$?
+
+    echo -e "\n  ${YELLOW}[3/3] Reiniciando Apache...${NC}"
+    systemctl reload apache2 2>/dev/null
+    systemctl restart apache2 2>/dev/null
+
+    echo ""
+    if [ $SSL_RESULT -eq 0 ]; then
+        echo -e "  ${BGREEN}✅ HTTPS instalado correctamente${NC}"
+        echo -e "  ${GREEN}Tu panel ahora es accesible en: https://${SSL_DOMAIN}${NC}"
+        echo -e "  ${DIM}Renovación automática: cada 90 días vía cron (systemd timer).${NC}"
+        echo -e "  ${DIM}Para verificar: certbot certificates${NC}"
+    else
+        echo -e "  ${BRED}❌ Error al obtener el certificado${NC}"
+        echo -e "\n  ${YELLOW}Verificá que:${NC}"
+        echo -e "    • ${CYAN}${SSL_DOMAIN}${NC} apunta a ${CYAN}${SERVER_IP}${NC} (DNS propagado)"
+        echo -e "    • El puerto 80 está accesible desde internet"
+        echo -e "    • No hay otro proceso usando el puerto 80"
+        echo -e "\n  ${DIM}Para debug: certbot certonly --standalone -d ${SSL_DOMAIN}${NC}"
+    fi
+    pause
+}
+
+while true; do
+    show_menu
+    read opt
+    case $opt in
+        1) do_status;;
+        2) do_restart;;
+        3) do_logs;;
+        4) do_update;;
+        5) do_list_users;;
+        6) do_edit_user;;
+        7) do_search_user;;
+        8) do_blocked_users;;
+        9) do_change_admin;;
+        10) do_prices;;
+        11) do_ports;;
+        12) do_autostart;;
+        13) do_server_info;;
+        14) do_backup;;
+        15) do_restore;;
+        16) do_export;;
+        17) do_uninstall;;
+        18) do_stats;;
+        19) do_config_email;;
+        20) do_upload_apk_base;;
+        21) do_fix_php_limits;;
+        22) do_ssl;;
+        23) setup_apk_signing;;
+        0) echo -e "\n${GREEN}¡Hasta luego! By El NeNe${NC}\n"; exit 0;;
+        *) echo -e "${RED}Opción inválida${NC}"; sleep 1;;
+    esac
+done
