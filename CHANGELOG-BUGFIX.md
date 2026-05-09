@@ -1,62 +1,74 @@
 # CHANGELOG — PanelwebDtunel2 By El NeNe
 
-## v1.0.54 — 2026-05-10 — configs-rawarray-signing
+## v1.0.55 — 2026-05-11 — sign-button-fixes
 
-### "Nenhuma configuração encontrada" — RESUELTO
+### "Nenhuma configuração encontrada" — REALMENTE resuelto
 
-Análisis del SDK de DTunnel reveló que `assets/config.json` debe ser un
-**array de objetos directo**, no `{"content": [array]}` como lo teníamos.
-El endpoint `/api/dtunnelmod` con `dtunnel-update: app_config` hace
-`response.map(JSON.parse)` y retorna array crudo. Los archivos offline
-en `assets/` siguen el mismo formato.
+El v1.0.54 tenía un **bug de orden de operaciones**: el sync de categorías
+que rellena `category.id` se ejecutaba DESPUÉS de escribir `config.json`,
+así que los configs salían con `category: {name, color, sorter}` SIN id.
+La app DTunnel matchea `config.category.id` contra `category.json[].id` —
+sin id, descartaba todos los configs.
 
-Cambiados a RAW ARRAY:
-- `assets/config.json` (configs VPN)
-- `assets/app_config.json` (layout)
-- `assets/app_text.json` (textos UI)
-- `assets/category.json`
-- `assets/cdn.json`
+Inspeccioné el APK que mandaste (`79c3ed_ElNeneLite`):
+- 6 configs con `id` ✓
+- Pero `config.category.id` → vacío en los 6 ✗
+- 7 categorías en `category.json` con `id` ✓
+- Match → False → "Nenhuma configuração encontrada"
 
-### Categorías embebidas con id+status — RESUELTO
+Fix: reordené para que el sync ocurra ANTES de escribir `config.json`. Ahora
+cada config sale con `category: {id, name, color, sorter, status}` completo.
 
-Los configs traían `category: {name, color, sorter}` sin `id` ni `status`.
-La app DTunnel matchea `config.category.id` con `category.json[].id`. Sin
-match, los configs son rechazados → "Nenhuma configuração encontrada".
+### Layout dejó de funcionar — RESUELTO
 
-Fix en dos pasadas:
-1. Extraer todas las categorías embebidas y registrarlas en `category.json`
-   con `id` estable (hash MD5 del nombre) y `status: ACTIVE`.
-2. Rellenar `id` y `status` en cada `config.category` apuntando al objeto
-   registrado en la pasada 1.
+En v1.0.54 cambié `app_config.json` (LAYOUT) a raw array siguiendo el SDK,
+pero ese archivo offline tiene un parser distinto al endpoint y necesita
+formato `{"content": [array]}` para funcionar. Lo volví al wrapper.
 
-Resultado: cada `config.category.id` existe en `category.json` → la app
-encuentra los configs.
+Resumen de formatos correctos por archivo:
+- `assets/app_config.json` (LAYOUT) → `{"content": [array]}`
+- `assets/app_text.json` (textos) → `{"content": [array]}`
+- `assets/config.json` (configs VPN) → `[array]` raw
+- `assets/category.json` → `[array]` raw
+- `assets/cdn.json` → `[array]` raw
 
-### Sub-menú robusto en opción [23] del CLI
+### Botón "Firmar APK" en el panel web — NUEVO
 
-La opción [23] anterior intentaba hacer todo de una y fallaba en silencio
-si algo (Java, descarga, permisos) no funcionaba. Ahora muestra:
+Después de generar el APK, en el card de éxito hay un botón nuevo (azul)
+"Firmar APK". Si el panel no firmó automáticamente al compilar, podés darle
+manualmente desde el panel web sin recompilar.
 
-- **Diagnóstico al entrar** — ✓/✗ por cada componente: Java, keytool,
-  jarsigner, keystore, uber-apk-signer.jar, permisos del directorio
-- **[1] Hacer todo** — workflow completo recomendado
-- **[2] Instalar Java JDK 21** — con fallback a 17 y default-jdk
-- **[3] Generar keystore** — paso aislado
-- **[4] Descargar uber-apk-signer.jar** — wget con fallback a curl
-- **[5] Probar firma con APK base** — test real con un APK real
-- **[6] Reset** — borrar y empezar de cero
-- **[7] Ver logs Apache** — filtrados por errores de firma
+El endpoint `?action=sign_apk` recibe el filename, valida que esté en
+`/downloads/`, hace autosetup (descarga uber-apk-signer si falta, genera
+keystore si no existe), firma con V1+V2+V3 y reemplaza el archivo. Si falla,
+muestra un toast con el motivo exacto.
 
-Cada paso reporta el error exacto y muestra los comandos manuales de
-recuperación si falla.
+### Test de firma [5] del CLI — Ruta corregida
+
+El test buscaba APKs en `/var/www/html/uploads/apk_bases` pero la ruta real
+es `/var/www/html/apk_base`. Corregido + fallback a otras rutas posibles.
+
+### Dashboard del CLI — Barritas visuales
+
+DISCO/RAM/CPU ahora se muestran como barras `[######········] 11%` con
+color según el porcentaje:
+- Verde: <60% (OK)
+- Amarillo: 60-79% (atención)
+- Rojo: ≥80% (crítico)
+
+RED se mantiene con flechas ↓ ↑ porque no es porcentaje.
 
 ---
 
-## v1.0.53 — 2026-05-09 — apk-size-fix
+## v1.0.54 — 2026-05-10
+- Configs/layout/text a raw array (parcial — bug de orden de ops)
+- Sync de categorías introducido pero ineficaz por orden
+- Sub-menú [23] con 7 opciones granulares
+
+## v1.0.53 — 2026-05-09
 - Tamaño APK 60→160MB resuelto (eliminado `lib/` del pattern STORE)
-- Firma autosetup en cada compilación (uber-apk-signer + fallback jarsigner)
-- Response include `sign_error` para diagnóstico
+- Firma autosetup + signError diagnóstico
 
 ## v1.0.52 — 2026-05-08
 - Solo SUPER_PRO/SUPER_LITE (eliminado DTUNNEL_MOD)
-- Fix structural: `}` mal posicionado en if POST que rompía /gerar-apk
+- Fix `}` mal posicionado que rompía /gerar-apk

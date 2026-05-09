@@ -10,9 +10,9 @@ REPO="https://github.com/eze1087/PanelwebDtunel2"
 INSTALL_DIR="/var/www/html"
 MENU_CMD="panel"
 
-PANEL_VERSION="v1.0.54"
-PANEL_COMMIT="configs-rawarray-signing"
-PANEL_DATE="2026-05-10"
+PANEL_VERSION="v1.0.55"
+PANEL_COMMIT="sign-button-fixes"
+PANEL_DATE="2026-05-11"
 
 echo ""
 echo -e "${BCYAN}╔══════════════════════════════════════════════════════════╗${NC}"

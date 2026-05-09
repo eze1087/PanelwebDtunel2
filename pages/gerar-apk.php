@@ -108,6 +108,143 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // ── ACTION: sign_apk — firmar un APK ya generado ────────────────
+    // Permite firmar APKs sin recompilar (botón "Firmar APK" en el panel)
+    if ($action === 'sign_apk') {
+        ob_start();
+        $input = json_decode(file_get_contents('php://input'), true) ?: [];
+        $filename = basename($input['filename'] ?? '');
+        if (empty($filename) || !preg_match('/\.apk$/', $filename)) {
+            ob_end_clean();
+            echo json_encode(['success' => false, 'error' => 'Filename inválido']);
+            exit;
+        }
+        $apkPath = $dirDown . '/' . $filename;
+        if (!file_exists($apkPath)) {
+            ob_end_clean();
+            echo json_encode(['success' => false, 'error' => 'APK no encontrado: ' . $filename]);
+            exit;
+        }
+
+        $signDir       = __DIR__ . '/../sign';
+        $keystorePath  = $signDir . '/release.jks';
+        $uberSignerJar = $signDir . '/uber-apk-signer.jar';
+        $keyAlias      = 'dtunnelkey';
+        $keyPass       = 'Dtunnel2024!!';
+
+        @mkdir($signDir, 0755, true);
+
+        // Detectar binarios
+        $find = function($name) {
+            foreach (['/usr/bin/', '/usr/lib/jvm/java-21-openjdk-amd64/bin/',
+                      '/usr/lib/jvm/java-17-openjdk-amd64/bin/',
+                      '/usr/lib/jvm/default-java/bin/'] as $base) {
+                if (is_executable($base . $name)) return $base . $name;
+            }
+            $cmd = @shell_exec('command -v ' . escapeshellarg($name) . ' 2>/dev/null');
+            return $cmd ? trim($cmd) : null;
+        };
+        $keytool   = $find('keytool');
+        $jarsigner = $find('jarsigner');
+        $java      = $find('java');
+
+        if (!$java) {
+            ob_end_clean();
+            echo json_encode(['success' => false, 'error' => 'Java no instalado. Ejecutá: panel → [23] → [2]']);
+            exit;
+        }
+        // Auto-keystore
+        if (!file_exists($keystorePath) && $keytool) {
+            @exec(escapeshellcmd($keytool)
+                . ' -genkey -v -noprompt'
+                . ' -keystore ' . escapeshellarg($keystorePath)
+                . ' -alias '    . escapeshellarg($keyAlias)
+                . ' -keyalg RSA -keysize 2048 -validity 10000'
+                . ' -storepass ' . escapeshellarg($keyPass)
+                . ' -keypass '   . escapeshellarg($keyPass)
+                . ' -dname "CN=DTunnel,OU=DTunnel,O=DTunnel,L=BuenosAires,S=BA,C=AR" 2>&1');
+        }
+        // Auto-download uber-apk-signer si falta
+        if (!file_exists($uberSignerJar)) {
+            $url = 'https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar';
+            $ctx = stream_context_create(['http' => ['timeout' => 60]]);
+            $jarData = @file_get_contents($url, false, $ctx);
+            if ($jarData !== false && strlen($jarData) > 100000) {
+                @file_put_contents($uberSignerJar, $jarData);
+            }
+        }
+
+        $signed = false;
+        $errorOut = null;
+
+        // Intento 1: uber-apk-signer (V1+V2+V3 + zipalign)
+        if (file_exists($keystorePath) && file_exists($uberSignerJar)) {
+            $tmpDir = sys_get_temp_dir() . '/sign-' . uniqid();
+            @mkdir($tmpDir, 0755, true);
+            $tmpApk = $tmpDir . '/' . $filename;
+            @copy($apkPath, $tmpApk);
+
+            $cmd = escapeshellarg($java) . ' -jar ' . escapeshellarg($uberSignerJar)
+                 . ' --apks '    . escapeshellarg($tmpApk)
+                 . ' --out '     . escapeshellarg($tmpDir)
+                 . ' --ks '      . escapeshellarg($keystorePath)
+                 . ' --ksAlias ' . escapeshellarg($keyAlias)
+                 . ' --ksPass '  . escapeshellarg($keyPass)
+                 . ' --ksKeyPass '. escapeshellarg($keyPass)
+                 . ' --allowResign --overwrite 2>&1';
+            $out = []; $rc = 1;
+            @exec($cmd, $out, $rc);
+
+            if ($rc === 0) {
+                $found = array_merge(
+                    glob($tmpDir . '/*-aligned-signed.apk') ?: [],
+                    glob($tmpDir . '/*-signed.apk') ?: [],
+                    [$tmpApk]
+                );
+                foreach ($found as $f) {
+                    if (file_exists($f) && filesize($f) > 100000) {
+                        @unlink($apkPath);
+                        @copy($f, $apkPath);
+                        @chmod($apkPath, 0644);
+                        $signed = true;
+                        break;
+                    }
+                }
+            }
+            if (!$signed) $errorOut = 'uber-apk-signer: ' . implode(' | ', array_slice($out, -3));
+            foreach (glob($tmpDir . '/*') as $tmp) @unlink($tmp);
+            @rmdir($tmpDir);
+        }
+
+        // Fallback: jarsigner V1
+        if (!$signed && $jarsigner && file_exists($keystorePath)) {
+            $cmd = escapeshellcmd($jarsigner)
+                 . ' -sigalg SHA256withRSA -digestalg SHA-256'
+                 . ' -keystore ' . escapeshellarg($keystorePath)
+                 . ' -storepass ' . escapeshellarg($keyPass)
+                 . ' -keypass '   . escapeshellarg($keyPass)
+                 . ' ' . escapeshellarg($apkPath)
+                 . ' ' . escapeshellarg($keyAlias) . ' 2>&1';
+            $out = []; $rc = 1;
+            @exec($cmd, $out, $rc);
+            if ($rc === 0) {
+                $signed = true;
+                $errorOut = null;
+            } else {
+                $errorOut = 'jarsigner: ' . implode(' | ', array_slice($out, -3));
+            }
+        }
+
+        ob_end_clean();
+        echo json_encode([
+            'success' => $signed,
+            'error'   => $errorOut,
+            'method'  => $signed ? (file_exists($uberSignerJar) ? 'uber-apk-signer (V1+V2+V3)' : 'jarsigner (V1)') : null,
+            'size'    => $signed ? filesize($apkPath) : 0,
+        ]);
+        exit;
+    }
+
     // 4. UPLOAD APK BASE
     if ($action === 'upload_base') {
         // Garantir que a pasta existe e tem permissão de escrita
@@ -443,8 +580,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // ── Detectar tipo: SUPER_PRO o SUPER_LITE ──────────────────────
             $apkType = dtunnel_detect_apk_type($allFiles);
 
-            // ── PASO 1: configs del usuario → assets/config.json ─────────────
-            // Formato {"content": "base64(JSON_array)"} — el que SUPER APKs esperan.
+            // ── PASO 1: configs del usuario + sync categorías ───────────────
             $configsFile = __DIR__ . '/../db/configs.json';
             $userConfigsLocal = [];
             if (file_exists($configsFile)) {
@@ -456,6 +592,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 foreach ($userConfigsLocal as &$cf) { unset($cf['user_email']); }
                 unset($cf);
             }
+
             // Expandir category_id → objeto category (formato esperado por la app)
             $catFile = __DIR__ . '/../db/categories.json';
             $allCatsLocal = file_exists($catFile) ? (json_decode(file_get_contents($catFile), true) ?: []) : [];
@@ -471,39 +608,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($cid !== null && isset($userCatsMap[$cid])) {
                         $catObj = $userCatsMap[$cid];
                         $cfgLocal['category'] = [
+                            'id'     => (int)($catObj['id'] ?? 0),
                             'name'   => $catObj['name'] ?? 'Default',
                             'color'  => $catObj['color'] ?? '#FF808080',
                             'sorter' => (int)($catObj['sorter'] ?? 1),
+                            'status' => 'ACTIVE',
                         ];
                     } elseif (!isset($cfgLocal['category']) || !is_array($cfgLocal['category'])) {
-                        $cfgLocal['category'] = ['name' => 'Default', 'color' => '#FF808080', 'sorter' => 1];
+                        $cfgLocal['category'] = ['id' => 0, 'name' => 'Default', 'color' => '#FF808080', 'sorter' => 1, 'status' => 'ACTIVE'];
                     }
                 }
                 unset($cfgLocal['category_id']);
             }
             unset($cfgLocal);
-            // Formato {"content": [array]} — mismo que app_config.json (layout) y app_text.json
-            // Es el que funciona porque el layout sí carga. Los configs deben usar el mismo parser.
-            // FORMATO: RAW ARRAY sin wrapper.
-            // El SDK de DTunnel hace response.map(JSON.parse) — manda array directo.
-            // Los archivos offline siguen el mismo formato que el endpoint /api/dtunnelmod.
-            $allFiles['assets/config.json'] = json_encode(
-                array_values($userConfigsLocal ?: []),
-                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
-            );
 
-            // ── PASO 2: dtunnelmod.json (URLs panel para updates online) ────
-            $allFiles['assets/dtunnelmod.json'] = $dtJsonStr;
-
-            // ── PASO 3: user_id.txt — NUNCA MODIFICAR ─────────────────────
-            // Token binario interno del APK base. Se preserva tal cual estaba.
-
-            // ── PASO 4: category.json + cdn.json + app_text.json ────────────
-            // SYNC categorías: extraer las categorías embebidas en configs y agregarlas
-            // si no existen en $userCats. Sin esto, el SDK filtra los configs cuya categoría
-            // no está en la lista (o no tiene status:ACTIVE).
-            // SYNC categorías + asegurar id/status en cada category embebida.
-            // La app DTunnel matchea config.category.id con category.json[].id.
+            // ── SYNC categorías: registrar todas las embebidas + rellenar id+status ──
+            // CRÍTICO: la app DTunnel matchea config.category.id con category.json[].id.
             // Sin id, los configs son rechazados → "Nenhuma configuração encontrada".
             $catByName = [];
             foreach ($userCats ?: [] as $catItem) {
@@ -512,7 +632,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $catByName[strtolower($catItem['name'])] = $catItem;
                 }
             }
-            // Pasada 1: registrar todas las categorías embebidas en configs
+            // Pasada 1: registrar categorías embebidas en configs
             foreach ($userConfigsLocal as $cfg) {
                 $embCat = $cfg['category'] ?? null;
                 if (!is_array($embCat) || empty($embCat['name'])) continue;
@@ -528,7 +648,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ];
                 }
             }
-            // Pasada 2: rellenar id+status en category de cada config (sin sobreescribir si ya tiene)
+            // Pasada 2: rellenar id+status en category de cada config (CRÍTICO)
             foreach ($userConfigsLocal as &$cfgRef) {
                 $embCat = $cfgRef['category'] ?? null;
                 if (!is_array($embCat) || empty($embCat['name'])) continue;
@@ -547,7 +667,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             unset($cfgRef);
             $finalCats = array_values($catByName);
 
-            // RAW ARRAY (mismo formato que endpoint API)
+            // ── PASO 2: AHORA SÍ escribir config.json (con category.id rellenado) ──
+            // RAW ARRAY (mismo formato que endpoint app_config del SDK)
+            $allFiles['assets/config.json'] = json_encode(
+                array_values($userConfigsLocal ?: []),
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+            );
+
+            // ── PASO 3: dtunnelmod.json (URLs panel para updates online) ────
+            $allFiles['assets/dtunnelmod.json'] = $dtJsonStr;
+
+            // ── PASO 4: user_id.txt — NUNCA MODIFICAR ───────────────────────
+            // Token binario interno del APK base. Se preserva tal cual estaba.
+
+            // ── PASO 5: category.json + cdn.json (RAW ARRAY) ────────────────
             $allFiles['assets/category.json'] = json_encode(
                 $finalCats, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
             );
@@ -614,8 +747,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 $finalTexts = $defaultTexts;
             }
-            // RAW ARRAY
-            $allFiles['assets/app_text.json'] = json_encode($finalTexts, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            // FORMATO {"content": [array]} — match con app_config.json (layout)
+            $allFiles['assets/app_text.json'] = json_encode(
+                ['content' => $finalTexts],
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+            );
 
             // ── PASO 5: app_config.json (layout) ──────────────────────────
             $defaultTemplate = '[{"name":"APP_LOGO","value":null,"type":"IMAGE"},{"name":"APP_BACKGROUND_IMAGE","value":null,"type":"IMAGE"},{"name":"APP_BACKGROUND_TYPE","value":{"options":[{"label":"Imagem","value":"IMAGE"},{"label":"Color","value":"COLOR"}],"selected":"COLOR"},"type":"SELECT"},{"name":"APP_BACKGROUND_COLOR","value":"#FF0e16c6","type":"COLOR"},{"name":"APP_CARD_COLOR","value":"#1d242e73","type":"COLOR"},{"name":"APP_CARD_RADIUS","value":25,"type":"INTEGER"},{"name":"APP_CARD_STATUS_COLOR","value":"#1d242e73","type":"COLOR"},{"name":"APP_CARD_STATUS_RADIUS","value":25,"type":"INTEGER"},{"name":"APP_CARD_CONFIG_COLOR","value":"#0E171EC9","type":"COLOR"},{"name":"APP_DIALOG_BACKGROUND_COLOR","value":"#050C5AE4","type":"COLOR"},{"name":"APP_DIALOG_LOGGER_COLOR","value":"#080e16c7","type":"COLOR"},{"name":"APP_BORDER_COLOR","value":"#1d242e00","type":"COLOR"},{"name":"APP_INPUT_COLOR","value":"#1d242e73","type":"COLOR"},{"name":"APP_INPUT_RADIUS","value":25,"type":"INTEGER"},{"name":"APP_TEXT_COLOR","value":"#FFFFFFFF","type":"COLOR"},{"name":"APP_BUTTON_COLOR","value":"#1d242e73","type":"COLOR"},{"name":"APP_BUTTON_RADIUS","value":25,"type":"INTEGER"},{"name":"APP_ICON_COLOR","value":"#FFFFFFFF","type":"COLOR"},{"name":"APP_SHOW_CONNECTION_MODE","value":true,"type":"BOOLEAN"},{"name":"APP_CONFIG_AUTO_UPDATE","value":false,"type":"BOOLEAN"},{"name":"APP_CONNECTION_LIMITER","value":false,"type":"BOOLEAN"},{"name":"APP_BTN_UPDATE_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_BTN_LOGGER_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_BTN_PAGE_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_BTN_MENU_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_UPDATE_LAST_SEEN_ENABLED","value":false,"type":"BOOLEAN"},{"name":"APP_CONFIG_LOCATION_PERMISSION","value":true,"type":"BOOLEAN"},{"name":"APP_DIALOG_ERROR_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_CHECKUSER_DIALOG_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_SUCCESS_TOAST_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_ERROR_TOAST_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_LOCAL_IP_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_CONFIG_FILTER_ENABLED","value":false,"type":"BOOLEAN"},{"name":"APP_PING_SERVICE_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_CDN_COUNT_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_AIRPLANE_MODE","value":true,"type":"BOOLEAN"},{"name":"APP_AIRPLANE_MODE_TIMEOUT","value":1,"type":"INTEGER"},{"name":"APP_ALERT_SOUND_ENABLED","value":true,"type":"BOOLEAN"},{"name":"APP_LAYOUT_WEBVIEW_ENABLED","value":false,"type":"BOOLEAN"},{"name":"APP_MESSAGE","value":null,"type":"TEXT"},{"name":"APP_MESSAGE_TYPE","value":{"options":[{"label":"Alerta","value":"ALERT"},{"label":"Info","value":"INFO"},{"label":"Bienvenida","value":"WELCOME"},{"label":"Sin mensaje","value":"NONE"}],"selected":"NONE"},"type":"SELECT"},{"name":"APP_LAYOUT_WEBVIEW","value":null,"type":"HTML"},{"name":"APP_SUPPORT_BUTTON","value":null,"type":"HTML"},{"name":"APP_WEB_VIEW","value":null,"type":"HTML"}]';
@@ -689,9 +825,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     return in_array($i['name'] ?? '', $apkKnownFields);
                   })
                 : $mergedConfig;
-            // RAW ARRAY (match con endpoint app_layout del SDK)
+            // FORMATO {"content": [array]} — el LAYOUT funcionaba con este wrapper.
+            // El nombre del archivo y el parser de la app son distintos al config.json.
             $allFiles['assets/app_config.json'] = json_encode(
-                array_values($filteredConfig), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+                ['content' => array_values($filteredConfig)],
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
             );
 
             // ── PASO 6: Reemplazar icono ──────────────────────────────────
@@ -1089,6 +1227,11 @@ h1.main-title { font-size: 1.8rem; font-weight: 800; color: var(--text-main); ma
 .ap-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; width: 100%;}
 .btn-ap { background: transparent; border: 1px solid var(--card-border); border-radius: 14px; padding: 14px 0; font-weight: 800; font-size: 0.8rem; color: var(--text-main); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: 0.2s; white-space: nowrap;}
 .btn-ap:active { transform: scale(0.95); background: var(--inner-bg); }
+.btn-ap.btn-sign { color: #60a5fa; border-color: rgba(96, 165, 250, 0.3); }
+.btn-ap.signed-ok { color: var(--primary); border-color: var(--primary-light); background: var(--primary-light); }
+.btn-ap.btn-sign[disabled] { opacity: 0.7; cursor: wait; }
+.btn-ap svg.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .btn-ap svg { width: 18px; stroke-width: 2.2px; }
 
 @media (max-width: 480px) {
@@ -1422,6 +1565,7 @@ h1.main-title { font-size: 1.8rem; font-weight: 800; color: var(--text-main); ma
             </div>
 
             <div class="ap-buttons">
+                <button class="btn-ap btn-sign" id="btn-sign-apk" onclick="signCurrentApk()" title="Firmar APK"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg> <span>Firmar APK</span></button>
                 <button class="btn-ap" onclick="copyFinalLink()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> <span data-i18n="copiar_link">Copiar link</span></button>
                 <button class="btn-ap" onclick="downloadFinalApk()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> <span data-i18n="baixar_apk">Descargar APK</span></button>
                 <button class="btn-ap" onclick="resetToForm()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg> <span data-i18n="gerar_outro">Generar outro</span></button>
@@ -1928,6 +2072,40 @@ function deleteSpecific(filename) {
                 }
             });
         }
+    });
+}
+
+function signCurrentApk() {
+    if (!currentGeneratedFile) return;
+    const btn = document.getElementById('btn-sign-apk');
+    if (!btn) return;
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> <span>Firmando...</span>';
+    showToastRaw('Firmando APK...', 'success');
+    fetch('?action=sign_apk', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({filename: currentGeneratedFile})
+    })
+    .then(r => r.json())
+    .then(res => {
+        btn.disabled = false;
+        if (res.success) {
+            const sizeMb = res.size ? (res.size / 1048576).toFixed(2) : '?';
+            btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> <span>APK firmada</span>';
+            btn.classList.add('signed-ok');
+            showToastRaw('APK firmada — ' + sizeMb + ' MB', 'success');
+        } else {
+            btn.innerHTML = origHtml;
+            const err = res.error || 'Error desconocido';
+            Swal.fire('Error al firmar', err + '. Probá: panel → [23] → [1]', 'error');
+        }
+    })
+    .catch(e => {
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+        Swal.fire('Error de red', 'No se pudo contactar al servidor', 'error');
     });
 }
 

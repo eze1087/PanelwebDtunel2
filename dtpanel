@@ -3,9 +3,9 @@
 #  panel - Gestión completa By Elnene Panel WEB2
 #  WA: 3455236886 | TG: @El_NeNe_Sando
 # ================================================================
-PANEL_VERSION="v1.0.54"
-PANEL_COMMIT="configs-rawarray-signing"
-PANEL_DATE="2026-05-10"
+PANEL_VERSION="v1.0.55"
+PANEL_COMMIT="sign-button-fixes"
+PANEL_DATE="2026-05-11"
 
 PANEL_DIR="/var/www/html"
 BACKUP_DIR="/var/backups/dtpanel"
@@ -70,6 +70,29 @@ HTEOF
     fi
 }
 
+# ── Helper: dibujar barra de progreso estilo [#######········] N% ──
+_draw_bar() {
+    local pct=$1
+    local label=$2
+    local color_bar="$3"
+    local extra="$4"
+    [ -z "$pct" ] && pct=0
+    local width=40
+    local filled=$((pct * width / 100))
+    [ $filled -gt $width ] && filled=$width
+    local empty=$((width - filled))
+    local bar=""
+    local i
+    for ((i=0; i<filled; i++)); do bar="${bar}#"; done
+    for ((i=0; i<empty; i++)); do bar="${bar}·"; done
+    # Color según porcentaje
+    local pct_color="${BGREEN}"
+    if [ "$pct" -ge 80 ]; then pct_color="${BRED}"
+    elif [ "$pct" -ge 60 ]; then pct_color="${BYELLOW}"
+    fi
+    printf "  ${BOLD}%-7s${NC}: ${color_bar}[%s]${NC} ${pct_color}%3s%%${NC}  %s\n" \
+        "$label" "$bar" "$pct" "$extra"
+}
 title() {
     clear
     htaccess_check
@@ -137,12 +160,18 @@ title() {
     printf "  Apache : ${APACHE_COL}%-10s${NC}  Usuarios: ${WHITE}%s${NC}   Backup: %s\n" \
         "$APACHE_TXT" "$TOTAL_U" "$LAST_BK"
     printf "  URL    : ${YELLOW}%-38s${NC}  SSL: ${SSL_TXT}\n" "$PANEL_URL"
-    # ── RECURSOS ───────────────────────────────────────────────────
+    # ── RECURSOS (con barritas visuales) ───────────────────────────
     echo -e "${BCYAN}──────────────────────────────────────────────────────────────${NC}"
-    printf "  Disco  : ${BBLUE}%s / %s${NC} (%s)   libre: %s\n"           "$DISK_USED" "$DISK_TOTAL" "$DISK_USE" "$DISK_FREE"
-    printf "  RAM    : ${BBLUE}%s / %s MB${NC} (%s%%)  libre: %s MB\n"    "$RAM_USED"  "$RAM_TOTAL"  "$RAM_PCT"  "$RAM_FREE"
-    printf "  CPU    : ${BBLUE}%sc${NC}  uso: ${BBLUE}%s%%${NC}  load: %s\n" "$CPU_CORES" "$CPU_USE" "$LOAD"
-    printf "  Red    : RX ${BBLUE}%s GB${NC}  |  TX ${BBLUE}%s GB${NC}  (desde boot)\n" "$NET_RX" "$NET_TX"
+    # Disco
+    local DISK_PCT_NUM=$(echo "$DISK_USE" | tr -d '%' | tr -d ' ')
+    [ -z "$DISK_PCT_NUM" ] && DISK_PCT_NUM=0
+    _draw_bar "$DISK_PCT_NUM" "DISCO" "${BBLUE}" "${DIM}$DISK_USED / $DISK_TOTAL${NC}  (libre $DISK_FREE)"
+    # RAM
+    _draw_bar "$RAM_PCT" "RAM"   "${BBLUE}" "${DIM}${RAM_USED}MB / ${RAM_TOTAL}MB${NC}  (libre ${RAM_FREE}MB)"
+    # CPU
+    _draw_bar "$CPU_USE" "CPU"   "${BBLUE}" "${DIM}${CPU_CORES} cores  load: $LOAD${NC}"
+    # Red (no es porcentaje, mostrar tradicional con flechas)
+    printf "  ${BOLD}RED${NC}    : ${BGREEN}↓ %s GB${NC}  ${BRED}↑ %s GB${NC}  ${DIM}(desde boot)${NC}\n" "$NET_RX" "$NET_TX"
     echo -e "${BCYAN}──────────────────────────────────────────────────────────────${NC}"
     echo ""
 }
@@ -406,12 +435,17 @@ _sign_test_signing() {
         return 1
     fi
 
-    # Buscar un APK base para probar
-    BASE_APKS_DIR="$PANEL_DIR/panel/uploads/apk_bases"
-    [ ! -d "$BASE_APKS_DIR" ] && BASE_APKS_DIR="$PANEL_DIR/uploads/apk_bases"
-    TEST_APK=$(find "$BASE_APKS_DIR" -name "*.apk" 2>/dev/null | head -1)
+    # Buscar un APK base para probar (la ruta correcta es /apk_base)
+    TEST_APK=""
+    for try_dir in "$PANEL_DIR/apk_base" "$PANEL_DIR/panel/apk_base" "/var/www/html/apk_base"; do
+        if [ -d "$try_dir" ]; then
+            TEST_APK=$(find "$try_dir" -name "*.apk" 2>/dev/null | head -1)
+            [ -n "$TEST_APK" ] && break
+        fi
+    done
     if [ -z "$TEST_APK" ]; then
-        echo -e "  ${YELLOW}⚠ No hay APKs base en $BASE_APKS_DIR para probar${NC}"
+        echo -e "  ${YELLOW}⚠ No hay APKs base en /var/www/html/apk_base para probar${NC}"
+        echo -e "  ${DIM}Subí un APK base desde el panel web → /gerar-apk → 'Subir APK base'${NC}"
         return 1
     fi
     echo -e "  ${DIM}Usando: $TEST_APK${NC}"
